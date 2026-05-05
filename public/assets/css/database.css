@@ -1,0 +1,1028 @@
+/* public/assets/css/database.css */
+
+/* Database Manager Specific Styles */
+.db-connection-status {
+    transition: all 0.3s ease;
+}
+
+.connection-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.connection-badge.mysql {
+    background: #00758f;
+    color: white;
+}
+
+.connection-badge.pgsql {
+    background: #336791;
+    color: white;
+}
+
+.connection-badge.sqlite {
+    background: #003b57;
+    color: white;
+}
+
+.connection-badge.default {
+    background: #f59e0b;
+    color: white;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.status-badge.status-active {
+    background: #10b981;
+    color: white;
+}
+
+.status-badge.status-inactive {
+    background: #ef4444;
+    color: white;
+}
+
+/* Tables List Styles */
+.table-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.table-item:hover {
+    background: rgba(0, 123, 255, 0.05);
+    transform: translateX(3px);
+}
+
+.table-item.active {
+    background: rgba(0, 123, 255, 0.1);
+    border-left: 3px solid var(--color-primary);
+}
+
+.table-item i {
+    font-size: 1.1rem;
+    color: #64748b;
+}
+
+.table-item .table-name {
+    flex: 1;
+    font-weight: 500;
+    font-size: 0.9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.table-item .eye-icon {
+    flex-shrink: 0;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s ease, color 0.2s ease;
+    font-size: 1.1rem;
+    margin-left: 8px;
+}
+
+.table-item:hover .eye-icon {
+    opacity: 1;
+    color: var(--color-primary) !important;
+}
+
+.table-item .eye-icon {
+    flex-shrink: 0;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s ease, color 0.2s ease;
+    font-size: 1.1rem;
+    margin-left: 8px;
+}
+
+.table-item:hover .eye-icon {
+    opacity: 1;
+    color: var(--color-primary) !important;
+}
+
+/* Ensure tables list container doesn't scroll horizontally */
+#tablesList {
+    overflow-x: hidden !important;
+}
+
+/* Prevent table items from causing horizontal overflow */
+.table-item {
+    min-width: 0;
+}
+
+.table-item .table-badge {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    background: #e2e8f0;
+    border-radius: 10px;
+    color: #475569;
+}
+
+/* SQL Editor Styles */
+#sqlQuery {
+    font-family: 'Courier New', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border: none;
+}
+
+#sqlQuery:focus {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    box-shadow: none;
+    border-color: var(--color-primary);
+}
+
+/* Results Table Styles */
+#resultsTable {
+    font-size: 12px;
+}
+
+#resultsTable thead th {
+    background: #f8f9fa;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+#resultsTable tbody tr:hover {
+    background: rgba(0, 123, 255, 0.05);
+}
+
+/* Table Details Modal */
+.schema-diagram {
+    background: #f8f9fa;
+    border-radius: 12px;
+    padding: 15px;
+    font-family: monospace;
+    font-size: 12px;
+    overflow-x: auto;
+}
+
+.index-info {
+    font-family: monospace;
+    font-size: 12px;
+    margin: 5px 0;
+    padding: 5px;
+    background: #f1f5f9;
+    border-radius: 6px;
+}
+
+/* Connections Table */
+.connections-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.connections-table th,
+.connections-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.connections-table th {
+    background: #f8f9fa;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+}
+
+.connection-name {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.connection-host {
+    font-size: 12px;
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.action-btn {
+    padding: 6px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: all 0.2s;
+}
+
+.action-btn.icon-only {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.action-btn.edit:hover {
+    background: rgba(0, 123, 255, 0.1);
+    color: #007bff;
+}
+
+.action-btn.delete:hover {
+    background: rgba(220, 53, 69, 0.1);
+    color: #dc3545;
+}
+
+/* Loading States */
+.loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    border-radius: 12px;
+}
+
+/* Animations */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.loading {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+    .connections-table {
+        font-size: 12px;
+    }
+    
+    .connections-table th,
+    .connections-table td {
+        padding: 8px;
+    }
+    
+    .action-buttons {
+        flex-direction: column;
+        gap: 4px;
+    }
+}
+
+/* Query Result Modal */
+#queryResultTable {
+    font-size: 12px;
+}
+
+#queryResultTable thead th {
+    background: #2d3748;
+    color: white;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+/* Custom Scrollbar for Tables List */
+#tablesList::-webkit-scrollbar {
+    width: 6px;
+}
+
+#tablesList::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 10px;
+}
+
+#tablesList::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 10px;
+}
+
+#tablesList::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* Toast Notifications */
+.db-toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 9999;
+    min-width: 300px;
+    animation: slideInRight 0.3s ease;
+}
+
+@keyframes slideInRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Dark Mode Support */
+@media (prefers-color-scheme: dark) {
+    .table-item:hover {
+        background: rgba(255, 255, 255, 0.05);
+    }
+    
+    .table-item.active {
+        background: rgba(0, 123, 255, 0.2);
+    }
+    
+    #resultsTable thead th {
+        background: #2d3748;
+        color: #e2e8f0;
+    }
+}
+/* Fix for Bootstrap Modal Issues */
+.modal {
+    z-index: 1050;
+}
+
+.modal-backdrop {
+    z-index: 1040;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+    z-index: 1051;
+    position: relative;
+    border-radius: 20px !important;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+    border-bottom: none;
+    padding: 25px 30px;
+}
+
+.modal-body {
+    padding: 30px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.modal-footer {
+    border-top: 1px solid #e2e8f0;
+    padding: 20px 30px;
+}
+
+/* Ensure modals appear above other content */
+.modal.show {
+    display: block;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal.fade .modal-dialog {
+    transition: transform 0.3s ease-out;
+}
+
+.modal.show .modal-dialog {
+    transform: none;
+}
+
+/* Fix for sticky headers in modals */
+.modal-body .table-responsive {
+    overflow-x: auto;
+}
+
+.modal-body .sticky-top {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+/* Form styling within modals */
+.modal .form-control,
+.modal .form-select {
+    border-radius: 10px;
+    border: 1px solid #e2e8f0;
+    transition: all 0.3s ease;
+}
+
+.modal .form-control:focus,
+.modal .form-select:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 0.2rem rgba(var(--color-primary-rgb), 0.25);
+}
+
+.modal .btn {
+    border-radius: 10px;
+    padding: 8px 20px;
+}
+
+/* Responsive modal adjustments */
+@media (max-width: 768px) {
+    .modal-dialog {
+        margin: 10px;
+    }
+    
+    .modal-body {
+        padding: 20px;
+    }
+    
+    .modal-header,
+    .modal-footer {
+        padding: 15px 20px;
+    }
+}
+
+/* Modal Backdrop Fix */
+.modal-backdrop {
+    z-index: 1040 !important;
+    background-color: rgba(0, 0, 0, 0.5) !important;
+}
+
+.modal-backdrop.show {
+    opacity: 0.5 !important;
+}
+
+.modal {
+    z-index: 1050 !important;
+}
+
+.modal-content {
+    z-index: 1051 !important;
+}
+
+/* Increase modal widths for better visibility */
+.modal-lg {
+    max-width: 90% !important;
+    width: 90% !important;
+}
+
+.modal-xl {
+    max-width: 95% !important;
+    width: 95% !important;
+}
+
+@media (min-width: 1200px) {
+    .modal-xl {
+        max-width: 1140px !important;  /* Larger for big screens */
+    }
+    .modal-lg {
+        max-width: 900px !important;
+    }
+}
+
+@media (max-width: 768px) {
+    .modal-lg, .modal-xl {
+        max-width: 98% !important;
+        width: 98% !important;
+        margin: 10px;
+    }
+}
+
+/* Ensure only one modal shows at a time */
+.modal.show ~ .modal {
+    display: none !important;
+}
+
+/* Fix for body when modal is open */
+body.modal-open {
+    overflow: hidden !important;
+    padding-right: 0 !important;
+}
+
+/* Toast notifications */
+.toast-container {
+    z-index: 1100 !important;
+}
+
+/* Prevent multiple clicks */
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.btn-loading {
+    position: relative;
+    pointer-events: none;
+}
+
+.btn-loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 16px;
+    height: 16px;
+    margin: -8px 0 0 -8px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Active Connections & Running Queries Table Enhancements */
+#activeConnectionsModal .table-responsive table,
+#runningQueriesModal .table-responsive table,
+#queryResultsModal .table-responsive table,
+#tableDetailsModal .table-responsive {
+    table-layout: fixed;
+    width: 100%;
+}
+
+#activeConnectionsModal th,
+#activeConnectionsModal td,
+#runningQueriesModal th,
+#runningQueriesModal td,
+#queryResultsModal th,
+#queryResultsModal td {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    vertical-align: middle;
+    padding: 8px 12px;
+}
+
+/* Column widths for Active Connections Modal */
+#activeConnectionsModal th:nth-child(1), #activeConnectionsModal td:nth-child(1) { width: 60px; }   /* PID */
+#activeConnectionsModal th:nth-child(2), #activeConnectionsModal td:nth-child(2) { width: 100px; }  /* User */
+#activeConnectionsModal th:nth-child(3), #activeConnectionsModal td:nth-child(3) { width: 120px; }  /* Host */
+#activeConnectionsModal th:nth-child(4), #activeConnectionsModal td:nth-child(4) { width: 80px; }   /* Command */
+#activeConnectionsModal th:nth-child(5), #activeConnectionsModal td:nth-child(5) { width: 80px; }   /* Duration */
+#activeConnectionsModal th:nth-child(6), #activeConnectionsModal td:nth-child(6) { width: 90px; }   /* State */
+#activeConnectionsModal th:nth-child(7), #activeConnectionsModal td:nth-child(7) { width: 110px; }  /* Database */
+#activeConnectionsModal th:nth-child(8), #activeConnectionsModal td:nth-child(8) { width: auto; }   /* Query */
+#activeConnectionsModal th:nth-child(9), #activeConnectionsModal td:nth-child(9) { width: 80px; }   /* Action */
+
+/* Column widths for Running Queries Modal */
+#runningQueriesModal th:nth-child(1), #runningQueriesModal td:nth-child(1) { width: 60px; }   /* PID */
+#runningQueriesModal th:nth-child(2), #runningQueriesModal td:nth-child(2) { width: 100px; }  /* User */
+#runningQueriesModal th:nth-child(3), #runningQueriesModal td:nth-child(3) { width: 120px; }  /* Host */
+#runningQueriesModal th:nth-child(4), #runningQueriesModal td:nth-child(4) { width: 100px; }  /* Database */
+#runningQueriesModal th:nth-child(5), #runningQueriesModal td:nth-child(5) { width: 80px; }   /* Time */
+#runningQueriesModal th:nth-child(6), #runningQueriesModal td:nth-child(6) { width: 90px; }   /* State */
+#runningQueriesModal th:nth-child(7), #runningQueriesModal td:nth-child(7) { width: auto; }   /* Query */
+#runningQueriesModal th:nth-child(8), #runningQueriesModal td:nth-child(8) { width: 80px; }   /* Action */
+
+/* Table Details Modal - Scrollable sections */
+#tableDetailsModal .table-responsive {
+    max-height: 300px;
+    overflow-y: auto;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+
+#tableDetailsModal .table-responsive thead th {
+    position: sticky;
+    top: 0;
+    background: #f8f9fa;
+    z-index: 10;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #64748b;
+}
+
+/* Query Results Modal enhancements */
+#queryResultsModal .table-responsive {
+    max-height: 500px;
+    overflow-y: auto;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+
+#queryResultsModal .table-responsive thead th {
+    background: #f8f9fa;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.5px;
+    color: #64748b;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    vertical-align: middle;
+    padding: 8px;
+}
+
+#queryResultsModal .table-responsive tbody td {
+    vertical-align: middle;
+    font-size: 0.85rem;
+    padding: 8px;
+}
+
+#queryResultsModal .table-responsive tbody tr:hover {
+    background-color: rgba(0, 123, 255, 0.05) !important;
+}
+
+#queryResultsModal .table pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.8rem;
+    background: #f8f9fa;
+    padding: 4px 8px;
+    border-radius: 4px;
+    max-height: 150px;
+    overflow: auto;
+}
+
+/* Query Results Modal enhancements */
+#queryResultsModal .modal-body {
+    padding: 0 20px 20px 20px;
+}
+
+#queryResultTable th {
+    background: #f8f9fa;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.5px;
+    color: #64748b;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+#queryResultTable tbody tr:hover {
+    background-color: rgba(0, 123, 255, 0.05) !important;
+}
+
+#queryResultTable td {
+    vertical-align: middle;
+    font-size: 0.85rem;
+}
+
+#queryResultTable pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.8rem;
+    background: #f8f9fa;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+#queryResultsModal th {
+    background: #f8f9fa;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    white-space: nowrap;
+}
+
+/* Prevent horizontal scroll in tables list */
+.tables-list-container {
+    overflow-x: hidden !important;
+    width: 100%;
+}
+
+.table-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.table-item:hover {
+    background: rgba(0, 123, 255, 0.05);
+    transform: translateX(3px);
+}
+
+.table-item.active {
+    background: rgba(0, 123, 255, 0.1);
+    border-left: 3px solid var(--color-primary);
+}
+
+.table-item i.bi-table {
+    font-size: 1.1rem;
+    color: #64748b;
+    flex-shrink: 0;
+}
+
+.table-item .table-name {
+    flex: 1;
+    font-weight: 500;
+    font-size: 0.9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.table-item .eye-icon {
+    flex-shrink: 0;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s ease, color 0.2s ease;
+    font-size: 1.1rem;
+    margin-left: 8px;
+}
+
+.table-item:hover .eye-icon {
+    opacity: 1;
+    color: var(--color-primary) !important;
+}
+
+/* Select2 Database Dropdown Styling */
+.select2-db {
+    border-radius: 12px !important;
+    border: 1px solid #ced4da !important;
+    min-height: 42px;
+}
+
+/* phpMyAdmin Info Card */
+#phpmyadminInfo {
+    border-left: 4px solid var(--color-primary);
+    transition: all 0.3s ease;
+    border-radius: 8px;
+}
+
+#phpmyadminInfo:hover {
+    transform: translateX(3px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08) !important;
+}
+
+/* Select2 Custom Styling */
+.select2-container--bootstrap-5 .select2-selection {
+    border-radius: 12px !important;
+    border: 1px solid #ced4da !important;
+    padding: 0.375rem 0.75rem;
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+}
+
+.select2-container--bootstrap-5 .select2-selection--single {
+    padding: 0.375rem 0.75rem;
+    min-height: 42px;
+    line-height: 1.5;
+}
+
+.select2-container--bootstrap-5 .select2-selection__rendered {
+    color: #212529;
+    padding-left: 0;
+    line-height: 1.5;
+}
+
+.select2-container--bootstrap-5 .select2-selection__arrow {
+    height: 100%;
+    width: 2.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #6c757d;
+}
+
+.select2-container--bootstrap-5 .select2-selection__arrow b {
+    display: none;
+}
+
+.select2-container--bootstrap-5 .select2-selection__arrow:after {
+    content: '';
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid currentColor;
+    margin-top: -3px;
+}
+
+.select2-container--bootstrap-5 .select2-selection--single:focus {
+    border-color: #86b7fe;
+    outline: 0;
+    box-shadow: 0 0 0 0.25rem rgba(var(--color-primary-rgb, 13, 110, 253), 0.25);
+}
+
+/* Select2 dropdown */
+.select2-dropdown.select2-dropdown--bootstrap-5 {
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 0 4px 25px rgba(0, 0, 0, 0.15);
+    overflow: hidden;
+}
+
+.select2-container--bootstrap-5 .select2-results__option {
+    padding: 10px 15px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.select2-container--bootstrap-5 .select2-results__option:last-child {
+    border-bottom: none;
+}
+
+.select2-container--bootstrap-5 .select2-results__option--highlighted[aria-selected] {
+    background-color: rgba(13, 110, 253, 0.1);
+    color: #0d6efd;
+}
+
+.select2-container--bootstrap-5 .select2-results__option[aria-selected="true"] {
+    background-color: rgba(var(--color-primary-rgb, 13, 110, 253), 0.15);
+    font-weight: 600;
+}
+
+/* Selected state with star */
+.select2-container--bootstrap-5 .select2-results__option--selected {
+    background-color: rgba(var(--color-primary-rgb, 13, 110, 253), 0.2);
+}
+
+/* Search field in dropdown */
+.select2-container--bootstrap-5 .select2-search--dropdown .select2-search__field {
+    border-radius: 8px;
+    padding: 8px 12px;
+    border: 1px solid #dee2e6;
+    margin: 8px;
+    width: calc(100% - 16px);
+    box-sizing: border-box;
+}
+
+.select2-container--bootstrap-5 .select2-search--dropdown .select2-search__field:focus {
+    border-color: #86b7fe;
+    outline: 0;
+    box-shadow: 0 0 0 0.2rem rgba(var(--color-primary-rgb, 13, 110, 253), 0.25);
+}
+
+/* No results message */
+.select2-container--bootstrap-5 .select2-results__message {
+    color: #6c757d;
+    font-style: italic;
+    padding: 10px 15px;
+}
+
+#phpmyadminContent .btn {
+    border-radius: 8px;
+    font-weight: 500;
+}
+
+#phpmyadminContent small {
+    font-size: 0.75rem;
+}
+
+#phpmyadminContent code {
+    font-size: 0.85rem;
+    background: #f8f9fa;
+    padding: 2px 6px;
+    border-radius: 4px;
+    word-break: break-all;
+}
+
+/* Row hover effect for better readability */
+#activeConnectionsModal tbody tr:hover,
+#runningQueriesModal tbody tr:hover {
+    background-color: rgba(0, 123, 255, 0.08) !important;
+}
+
+/* Ensure queries wrap nicely */
+#activeConnectionsModal td:nth-child(8),
+#runningQueriesModal td:nth-child(7) {
+    max-width: 300px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    line-height: 1.3;
+}
+
+/* Better badge styling for status in connections table */
+#connectionsTableBody .badge {
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 8px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Enhance stat cards with subtle gradient and shadow */
+.stat-card-ssh {
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.stat-card-ssh::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--gradient-primary);
+}
+
+.stat-card-ssh:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+    border-color: var(--color-primary);
+}
+
+.stat-number-ssh {
+    background: linear-gradient(135deg, var(--color-primary) 0%, #6366f1 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Modal footer button spacing */
+.modal-footer {
+    gap: 10px;
+}
+
+/* Ensure consistent table styling inside glass cards */
+.glass-card .table {
+    margin-bottom: 0;
+}
+
+.glass-card .table thead th {
+    border-bottom: 2px solid #e2e8f0;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    color: #64748b;
+}
+
+.glass-card .table tbody tr {
+    transition: background-color 0.2s ease;
+}
+
+.glass-card .table tbody tr:hover {
+    background-color: rgba(0, 123, 255, 0.04);
+}
+
+/* Connection status indicator */
+.connection-status-indicator {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+}
+
+.connection-status-indicator.online {
+    background-color: #10b981;
+}
+
+.connection-status-indicator.offline {
+    background-color: #ef4444;
+    animation: none;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Responsive improvements for tables in modals */
+@media (max-width: 768px) {
+    #activeConnectionsModal .table-responsive {
+        overflow-x: auto;
+    }
+    
+    #activeConnectionsModal th,
+    #activeConnectionsModal td {
+        padding: 6px 8px;
+        font-size: 12px;
+    }
+    
+    .stat-card-ssh {
+        padding: 15px;
+    }
+    
+    .stat-number-ssh {
+        font-size: 1.5rem;
+    }
+}

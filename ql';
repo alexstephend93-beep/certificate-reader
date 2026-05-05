@@ -1,0 +1,15 @@
+[90m= [39m[34;4mApp\Models\DatabaseCredential[39;24m {#7902
+    [34mid[39m: [35m1[39m,
+    [34mname[39m: [32m"[39m[32mfaston_stage[39m[32m"[39m,
+    [34mconnection_name[39m: [32m"[39m[32mmysql[39m[32m"[39m,
+    [34mhost[39m: [32m"[39m[32m3.108.48.143[39m[32m"[39m,
+    [34mport[39m: [32m"[39m[32m3306[39m[32m"[39m,
+    [34mdatabase[39m: [32m"[39m[32mfaston_stage[39m[32m"[39m,
+    [34musername[39m: [32m"[39m[32mroot[39m[32m"[39m,
+    [34mpassword[39m: [32m"[39m[32meyJpdiI6Ilh0UHJ2emNTN01Rb3k2NXNRMTFmcXc9PSIsInZhbHVlIjoicWpNM0FHUDNsOTB0T0JzYTlvNFZTdkFoK1oxeWpKTWExYktQR3l4c1lsST0iLCJtYWMiOiIyMmU3NDY2MzQzYjcwY2UzNTAxOTQ5ZTVmNDgyYjQ1NTRjMjJmMDA1YTcwNzAwNmQyMzdjNGM0MWU4MGQxOTAyIiwidGFnIjoiIn0=[39m[32m"[39m,
+    [34mnotes[39m: [32m"[39m[32mFaston Preprod Stage Admin[39m[32m"[39m,
+    [34mis_active[39m: [35m1[39m,
+    [34mis_default[39m: [35m0[39m,
+    [34mcreated_at[39m: [32m"[39m[32m2026-04-27 06:18:15[39m[32m"[39m,
+    [34mupdated_at[39m: [32m"[39m[32m2026-04-27 06:18:15[39m[32m"[39m,
+  }
