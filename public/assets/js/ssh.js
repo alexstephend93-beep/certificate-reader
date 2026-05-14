@@ -104,8 +104,8 @@ function searchServers() {
             host.description || '' // And description
         ].join(' ').toLowerCase();
 
-        // Check if any of the search words are found in the searchable text
-        return searchWords.some(word =>
+        // Check if all of the search words are found in the searchable text
+        return searchWords.every(word =>
             searchableText.includes(word.toLowerCase())
         );
     });
