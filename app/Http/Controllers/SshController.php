@@ -2365,13 +2365,15 @@ class SshController extends Controller
                           $credentialObj = DatabaseCredential::create($credentialData);
                       }
                       
-                      // Handle phpMyAdmin URL logic for newly created/updated credentials
-                      if (!empty($dbConfig['username']) && 
-                          (strtoupper($dbConfig['username']) === 'PAYMENTS_ADMIN' || 
-                           strtoupper($dbConfig['username']) === 'PAYTEST_ADMIN')) {
-                          $credentialObj->phpmyadmin_url = 'https://admin.paytest.in/phpmyadmin';
-                          $credentialObj->save();
-                      } elseif (!empty($dbConfig['host']) && $dbConfig['host'] === '127.0.0.1') {
+                       // Handle phpMyAdmin URL logic for newly created/updated credentials
+                       if (!empty($dbConfig['host']) && $dbConfig['host'] === '127.0.0.1') {
+                           if (!empty($dbConfig['username']) && 
+                               (strtoupper($dbConfig['username']) === 'PAYMENTS_ADMIN' || 
+                                strtoupper($dbConfig['username']) === 'PAYTEST_ADMIN')) {
+                               $credentialObj->phpmyadmin_url = 'https://admin.paytest.in/phpmyadmin';
+                               $credentialObj->save();
+                           } else {
+                               // non-payments_admin localhost: detect alias + merge with SSH domain
                           // For localhost, detect phpMyAdmin alias from Apache config
                           $aliasPath = null;
                           $configPaths = [
@@ -2414,10 +2416,11 @@ class SshController extends Controller
                               // Fallback if we can't determine the alias
                               $credentialObj->phpmyadmin_url = null;
                               $credentialObj->save();
-                          }
-                      }
-                     
-                     $credentialId = $credentialObj->id;
+                           }
+                        }
+                    }
+                      
+                      $credentialId = $credentialObj->id;
                     
                     // Log import
                     \DB::table('ssh_db_import_log')->updateOrInsert(

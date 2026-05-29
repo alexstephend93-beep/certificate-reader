@@ -530,9 +530,9 @@
                                         @endif
                                     </div>
                                     <div class="action-buttons">
-                                        <i class="bi bi-box-arrow-up-right action-icon login" 
-                                           title="Auto Login" 
-                                           onclick="window.open('{{ route('admin-credentials.auto-login', $cred->id) }}', '_blank')"></i>
+                                        <i class="bi bi-box-arrow-up-right action-icon login"
+                                           title="Auto Login"
+                                           onclick="window.open('{{ route('admin-credentials.auto-login-page', $cred->id) }}', '_blank')"></i>
                                         <i class="bi bi-clipboard action-icon copy" 
                                            title="Copy Credentials" 
                                            onclick="copyCredentials({{ $cred->id }})"></i>

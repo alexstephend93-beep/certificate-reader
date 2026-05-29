@@ -21,6 +21,7 @@ Route::group(['prefix' => 'certificate'], function () {
     Route::get('/', [CertificateController::class, 'index']);
     Route::post('/parse', [CertificateController::class, 'parse']);
     Route::get('/download/{action}', [CertificateController::class, 'download']);
+    Route::post('/check-domain', [CertificateController::class, 'checkDomain'])->name('certificate.check-domain');
 });
 
 Route::group(['prefix' => 'chain-validator'], function () {
@@ -149,6 +150,8 @@ Route::prefix('admin-credentials')->group(function () {
 
     Route::get('/credential/{id}', [AdminCredentialController::class, 'getCredential'])->name('admin-credentials.get-credential');
 
+    Route::get('/auto-login-page/{credentialId}', [AutoLoginController::class, 'autoLoginPage'])->name('admin-credentials.auto-login-page');
+
     Route::get('/auto-login/{credentialId}', [AutoLoginController::class, 'login'])->name('admin-credentials.auto-login');
 
     Route::get('/copy/{credentialId}', [AdminCredentialController::class, 'copyCredentials'])->name('admin-credentials.copy');
@@ -199,4 +202,17 @@ Route::prefix('database')->name('database.')->group(function () {
     Route::match(['GET', 'POST'], '/export-data', [DatabaseController::class, 'exportData'])->name('database.export.data');
     Route::get('/table-details/{id}/{table}', [DatabaseController::class, 'getTableDetails'])->name('database.table.details');
     Route::get('/table-data/{id}/{table}', [DatabaseController::class, 'getTableData'])->name('database.table.data');
+});
+
+
+use App\Http\Controllers\SslMatcherController;
+
+// SSL Matcher Routes
+Route::prefix('ssl-matcher')->name('ssl-matcher.')->group(function () {
+    Route::get('/', [SslMatcherController::class, 'index'])->name('index');
+    Route::post('/match-cert-key', [SslMatcherController::class, 'matchCertKey'])->name('match.cert.key');
+    Route::post('/match-cert-public', [SslMatcherController::class, 'matchCertPublicKey'])->name('match.cert.public');
+    Route::post('/match-certs', [SslMatcherController::class, 'matchCerts'])->name('match.certs');
+    Route::post('/match-pub-priv', [SslMatcherController::class, 'matchPublicKeyPrivateKey'])->name('match.pub.priv');
+    Route::get('/commands', [SslMatcherController::class, 'getCommands'])->name('commands');
 });

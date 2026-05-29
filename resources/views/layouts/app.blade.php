@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>@yield('title', 'Certificate Tools')</title>
 
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -349,6 +350,10 @@
                 <a href="{{ url('/certificate') }}" class="nav-link {{ request()->is('certificate*') ? 'active' : '' }}">
                     <i class="bi bi-file-earmark-lock-fill"></i>
                     <span>Certificate Reader</span>
+                </a>
+                <a href="{{ url('/ssl-matcher') }}" class="nav-link {{ request()->is('ssl-matcher*') ? 'active' : '' }}">
+                    <i class="bi bi-shield-lock-fill"></i>
+                    <span>SSL Matcher</span>
                 </a>
                 <a href="{{ url('/chain-validator') }}" class="nav-link {{ request()->is('chain-validator*') ? 'active' : '' }}">
                     <i class="bi bi-diagram-3-fill"></i>

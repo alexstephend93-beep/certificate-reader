@@ -13,9 +13,7 @@ class DatabaseController extends Controller
 {
     public function index()
     {
-        // Only show active (tested) connections in the main dropdown
-        $databases = DatabaseCredential::where('is_active', true)
-            ->orderBy('is_default', 'desc')
+        $databases = DatabaseCredential::orderBy('is_default', 'desc')
             ->orderBy('name')
             ->get();
         
@@ -69,6 +67,15 @@ class DatabaseController extends Controller
                 DatabaseCredential::where('is_default', true)->update(['is_default' => false]);
             } else {
                 $validated['is_default'] = false;
+            }
+            
+            // Handle phpMyAdmin URL logic
+            if (!empty($validated['username']) && 
+                (strtoupper($validated['username']) === 'PAYMENTS_ADMIN' || 
+                 strtoupper($validated['username']) === 'PAYTEST_ADMIN')) {
+                $validated['phpmyadmin_url'] = 'https://admin.paytest.in/phpmyadmin';
+            } elseif (!empty($validated['host']) && $validated['host'] === '127.0.0.1') {
+                $validated['phpmyadmin_url'] = null;
             }
             
             $database = DatabaseCredential::create($validated);

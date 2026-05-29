@@ -1794,6 +1794,105 @@ class CommandSeeder extends Seeder
                 'os' => 'linux,macos',
                 'danger_level' => 'medium',
                 'icon' => 'stop-circle'
+            ],
+            [
+                'name' => 'Check CSR and Private Key Modulus Match',
+                'category' => 'ssl',
+                'sub_category' => 'validation',
+                'command' => 'openssl req -noout -modulus -in domain.csr | openssl md5',
+                'description' => 'Shows the modulus hash of the Certificate Signing Request (CSR).',
+                'alternate_commands' => json_encode([
+                    'openssl req -noout -modulus -in certificate.csr | openssl md5'
+                ]),
+                'example_usage' => 'openssl req -noout -modulus -in payfunds.weaveswonders.com.csr | openssl md5',
+                'notes' => 'Run this on the CSR file to get its modulus hash.',
+                'tags' => 'ssl,csr,modulus,check',
+                'os' => 'all',
+                'danger_level' => 'low',
+                'icon' => 'check-circle'
+            ],
+            [
+                'name' => 'Check Private Key Modulus',
+                'category' => 'ssl',
+                'sub_category' => 'validation',
+                'command' => 'openssl rsa -noout -modulus -in private.key | openssl md5',
+                'description' => 'Shows the modulus hash of the private key.',
+                'alternate_commands' => json_encode([
+                    'openssl rsa -noout -modulus -in domain.key | openssl md5',
+                    'openssl pkey -noout -modulus -in private.key | openssl md5'
+                ]),
+                'example_usage' => 'openssl rsa -noout -modulus -in payfunds.weaveswonders.com_decrypted.key | openssl md5',
+                'notes' => 'Run this on the private key file. Use .key extension, not .key.key',
+                'tags' => 'ssl,private,key,modulus',
+                'os' => 'all',
+                'danger_level' => 'low',
+                'icon' => 'key'
+            ],
+            [
+                'name' => 'Verify CSR and Private Key Match (One-liner)',
+                'category' => 'ssl',
+                'sub_category' => 'validation',
+                'command' => 'if [ "$(openssl req -noout -modulus -in domain.csr | openssl md5)" = "$(openssl rsa -noout -modulus -in private.key | openssl md5)" ]; then echo "✅ MATCH"; else echo "❌ NO MATCH"; fi',
+                'description' => 'Compares CSR and private key modulus hashes and shows if they match.',
+                'alternate_commands' => json_encode([
+                    'test "$(openssl req -noout -modulus -in csr.pem | openssl md5)" = "$(openssl rsa -noout -modulus -in key.pem | openssl md5)" && echo "MATCH" || echo "NO MATCH"'
+                ]),
+                'example_usage' => 'if [ "$(openssl req -noout -modulus -in payfunds.weaveswonders.com.csr | openssl md5)" = "$(openssl rsa -noout -modulus -in payfunds.weaveswonders.com_decrypted.key | openssl md5)" ]; then echo "✅ MATCH"; else echo "❌ NO MATCH"; fi',
+                'notes' => 'Make sure file paths are correct. Use .key extension, not .key.key',
+                'tags' => 'ssl,csr,key,match,verify',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'check-circle'
+            ],
+            [
+                'name' => 'Check Certificate and Private Key Match',
+                'category' => 'ssl',
+                'sub_category' => 'validation',
+                'command' => 'if [ "$(openssl x509 -noout -modulus -in certificate.crt | openssl md5)" = "$(openssl rsa -noout -modulus -in private.key | openssl md5)" ]; then echo "✅ MATCH"; else echo "❌ NO MATCH"; fi',
+                'description' => 'Compares SSL certificate and private key modulus hashes.',
+                'alternate_commands' => json_encode([
+                    'test "$(openssl x509 -noout -modulus -in cert.crt | openssl md5)" = "$(openssl rsa -noout -modulus -in key.key | openssl md5)" && echo "MATCH" || echo "NO MATCH"'
+                ]),
+                'example_usage' => 'if [ "$(openssl x509 -noout -modulus -in payfunds.weaveswonders.com.crt | openssl md5)" = "$(openssl rsa -noout -modulus -in payfunds.weaveswonders.com.key | openssl md5)" ]; then echo "✅ MATCH"; else echo "❌ NO MATCH"; fi',
+                'notes' => 'Essential check before SSL installation.',
+                'tags' => 'ssl,certificate,key,match',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'check-circle'
+            ],
+            [
+                'name' => 'Fix for "Could not open file or uri" Error',
+                'category' => 'ssl',
+                'sub_category' => 'debug',
+                'command' => 'ls -la *.csr *.key *.crt 2>/dev/null',
+                'description' => 'Lists all CSR, KEY, and CRT files in current directory to check file existence.',
+                'alternate_commands' => json_encode([
+                    'find . -name "*.csr" -o -name "*.key" -o -name "*.crt"',
+                    'file *.csr *.key *.crt'
+                ]),
+                'example_usage' => 'ls -la | grep -E "\.(csr|key|crt)$"',
+                'notes' => 'Use this to verify your files exist and have correct names before running modulus commands.',
+                'tags' => 'ssl,debug,file,check',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'search'
+            ],
+            [
+                'name' => 'Decrypt Encrypted Private Key',
+                'category' => 'ssl',
+                'sub_category' => 'encryption',
+                'command' => 'openssl rsa -in encrypted.key -out decrypted.key',
+                'description' => 'Removes password encryption from a private key file.',
+                'alternate_commands' => json_encode([
+                    'openssl rsa -in domain_encrypted.key -out domain_decrypted.key',
+                    'openssl pkey -in encrypted.key -out decrypted.key'
+                ]),
+                'example_usage' => 'openssl rsa -in payfunds.weaveswonders.com_encrypted.key -out payfunds.weaveswonders.com.key',
+                'notes' => 'Will prompt for password. Use consistent naming: .key extension, not .key.key',
+                'tags' => 'ssl,decrypt,key,password',
+                'os' => 'all',
+                'danger_level' => 'medium',
+                'icon' => 'unlock'
             ]
         ];
 

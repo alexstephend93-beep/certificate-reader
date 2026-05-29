@@ -113,13 +113,17 @@ function fetchPhpMyAdminInfo(credentialId) {
             let html = '';
             
             // phpMyAdmin URL(s)
-            if (data.domain_url) {
+            let phpmyadminUrl = data.domain_url;
+            if (data.database_username && (data.database_username.toUpperCase() === 'PAYMENTS_ADMIN' || data.database_username.toUpperCase() === 'PAYTEST_ADMIN')) {
+                phpmyadminUrl = 'https://admin.paytest.in/phpmyadmin';
+            }
+            if (phpmyadminUrl) {
                 html += `
                     <div class="mb-2">
-                        <a href="${data.domain_url}" target="_blank" class="btn btn-sm btn-outline-primary w-100" id="phpmyadminUrlBtn">
-                            <i class="bi bi-box-arrow-up-right me-1"></i>Open phpMyAdmin (HTTPS)
-                        </a>
-                        <small class="text-muted d-block mt-1">URL: <code>${data.domain_url}</code></small>
+                         <a href="${phpmyadminUrl}" target="_blank" class="btn btn-sm btn-outline-primary w-100" id="phpmyadminUrlBtn">
+                             <i class="bi bi-box-arrow-up-right me-1"></i>Open phpMyAdmin (HTTPS)
+                         </a>
+                         <small class="text-muted d-block mt-1">URL: <code>${phpmyadminUrl}</code></small>
                     </div>
                 `;
             } else if (data.possible_urls && data.possible_urls.length > 0) {
