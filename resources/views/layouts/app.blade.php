@@ -322,7 +322,11 @@
             transform: translateY(-2px);
             color: var(--color-accent);
         }
-    </style>
+
+        .text-accent {
+            color: var(--color-accent) !important;
+        }
+</style>
     @yield('styles')
 </head>
 <body>
@@ -333,9 +337,9 @@
     </button>
 
     <aside class="sidebar" id="sidebar">
-        <div class="sidebar-header">
+        <a href="{{ url('/dashboard') }}" class="sidebar-header" style="text-decoration: none;">
             <h2><i class="bi bi-shield-lock-fill me-2"></i>NetTools</h2>
-        </div>
+        </a>
         <nav class="sidebar-nav">
             <div class="nav-item">
                 <a href="{{ url('/dashboard') }}" class="nav-link {{ request()->is('dashboard') || request()->is('/') ? 'active' : '' }}">

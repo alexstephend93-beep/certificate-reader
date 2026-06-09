@@ -1013,20 +1013,25 @@ class AIChatWidget {
                  })
              });
              
-             const data = await response.json();
-             
-             // Remove thinking indicator
-             this.hideThinking();
-             
-             if (data.success) {
-                 this.currentConversationId = data.conversation_id;
-                 this.addMessage(data.response, 'assistant');
-                 this.saveConversation();
-             } else {
-                 // Show API error message in a user-friendly way
-                 const errorMsg = data.message || 'Sorry, I encountered an error. Please try again.';
-                 this.addMessage('❌ **Error:** ' + errorMsg, 'assistant', true);
-             }
+              const data = await response.json();
+              
+              // Remove thinking indicator
+              this.hideThinking();
+              
+              if (data.success) {
+                  this.currentConversationId = data.conversation_id;
+                  this.addMessage(data.response, 'assistant');
+                  this.saveConversation();
+              } else if (data.is_image_error) {
+                  const imgErr = data.error_message || data.message || '';
+                  this.showError(imgErr);
+                  this.addMessage('❌ **Error:** ' + (data.message || 'This AI model only processes text. Image and file attachments are not supported.'), 'assistant', true);
+                  this.saveConversation();
+              } else {
+                  // Show API error message in a user-friendly way
+                  const errorMsg = data.message || 'Sorry, I encountered an error. Please try again.';
+                  this.addMessage('❌ **Error:** ' + errorMsg, 'assistant', true);
+              }
          } catch (error) {
              this.hideThinking();
              this.addMessage('❌ **Network error:** Please check your connection and try again.', 'assistant', true);

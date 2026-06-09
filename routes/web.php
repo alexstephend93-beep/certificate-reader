@@ -16,6 +16,9 @@ Route::get('/', function () {
 
 Route::get('/dashboard', [DashboardController::class, 'index']);
 Route::get('/theme/{theme}', [DashboardController::class, 'theme']);
+Route::post('/dashboard/numlock/start', [DashboardController::class, 'startNumLockToggle']);
+Route::post('/dashboard/numlock/stop', [DashboardController::class, 'stopNumLockToggle']);
+Route::get('/dashboard/numlock/status', [DashboardController::class, 'getNumLockStatus']);
 
 Route::group(['prefix' => 'certificate'], function () {
     Route::get('/', [CertificateController::class, 'index']);
@@ -97,6 +100,7 @@ Route::prefix('ssh')->group(function () {
     Route::get('/get-server/{host}', [SshController::class, 'getServer'])->name('ssh.get-server');
     Route::get('/command/{host}', [SshController::class, 'getSshCommand'])->name('ssh.command');
     Route::get('/diagnose/{host}', [SshController::class, 'diagnoseServer'])->name('ssh.diagnose');
+    Route::get('/proxy-health/{host}', [SshController::class, 'getProxyServerHealth'])->name('ssh.proxy-health');
     Route::delete('/delete/{host}', [SshController::class, 'deleteServer'])->name('ssh.delete');
     Route::post('/test-connectivity', [SshController::class, 'testConnectivity'])->name('ssh.test-connectivity');
     Route::get('/ssh-key-files', [SshController::class, 'getSshKeyFiles'])->name('ssh.key-files');

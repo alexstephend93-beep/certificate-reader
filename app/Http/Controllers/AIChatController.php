@@ -33,6 +33,18 @@ class AIChatController extends Controller
             $response = $this->getIntelligentFallbackResponse($message);
         }
         
+        // Detect if the response is actually an API error about image input
+        if ($response && $this->isApiImageInputError($response)) {
+            return response()->json([
+                'success' => false,
+                'error_message' => $response,
+                'message' => 'This AI model only processes text. Image and file attachments are not supported. Please describe what you need without referencing files or images.',
+                'is_image_error' => true,
+                'conversation_id' => $conversationId,
+                'timestamp' => now()->toIso8601String()
+            ]);
+        }
+        
         // Add AI response to history
         $history[] = ['role' => 'assistant', 'content' => $response];
         
@@ -49,6 +61,11 @@ class AIChatController extends Controller
     
     private function getRealAIResponse($history)
     {
+        $lastUserMessage = '';
+        if (!empty($history)) {
+            $lastUserMessage = is_array(end($history)) ? (end($history)['content'] ?? '') : '';
+        }
+
         // FREE API #1: Pollinations.ai (No API key, unlimited, works great!)
         try {
             $response = Http::timeout(30)
@@ -67,7 +84,18 @@ class AIChatController extends Controller
                     return $content;
                 }
             }
+
+            if ($response->failed()) {
+                $body = $response->body();
+                if ($this->isImageInputError($body, $lastUserMessage)) {
+                    return null;
+                }
+            }
         } catch (\Exception $e) {
+            $msg = $e->getMessage();
+            if ($this->containsImageRef($msg, $lastUserMessage)) {
+                return null;
+            }
             Log::warning('Pollinations.ai failed: ' . $e->getMessage());
         }
         
@@ -94,7 +122,18 @@ class AIChatController extends Controller
                     return $content;
                 }
             }
+
+            if ($response->failed()) {
+                $body = $response->body();
+                if ($this->isImageInputError($body, $lastUserMessage)) {
+                    return null;
+                }
+            }
         } catch (\Exception $e) {
+            $msg = $e->getMessage();
+            if ($this->containsImageRef($msg, $lastUserMessage)) {
+                return null;
+            }
             Log::warning('OpenRouter failed: ' . $e->getMessage());
         }
         
@@ -116,11 +155,48 @@ class AIChatController extends Controller
                     return $content;
                 }
             }
+
+            if ($response->failed()) {
+                $body = $response->body();
+                if ($this->isImageInputError($body, $lastUserMessage)) {
+                    return null;
+                }
+            }
         } catch (\Exception $e) {
+            $msg = $e->getMessage();
+            if ($this->containsImageRef($msg, $lastUserMessage)) {
+                return null;
+            }
             Log::warning('Llama API failed: ' . $e->getMessage());
         }
         
         return null;
+    }
+
+    private function isImageInputError($body, $userMessage)
+    {
+        if ($this->containsImageRef($body, $userMessage)) {
+            return true;
+        }
+        if (stripos($body, 'image input') !== false) return true;
+        if (stripos($body, 'image_url') !== false) return true;
+        if (stripos($body, 'input_image') !== false) return true;
+        if (stripos($body, 'content_type') !== false && stripos($body, 'image') !== false) return true;
+        return false;
+    }
+
+    private function containsImageRef($text, $userMessage)
+    {
+        $text = strtolower($text);
+        $message = strtolower($userMessage ?? '');
+        if (preg_match('/\.(png|jpg|jpeg|gif|bmp|webp|svg|ico|tiff|heic|avif)(\b|$)/i', $message)) {
+            return true;
+        }
+        if (preg_match('/image\.png/i', $text)) return true;
+        if (preg_match('/attach.*image/i', $message)) return true;
+        if (preg_match('/upload.*image/i', $message)) return true;
+        if (preg_match('/send.*image/i', $message)) return true;
+        return false;
     }
     
     private function getIntelligentFallbackResponse($message)
@@ -249,5 +325,17 @@ class AIChatController extends Controller
             $conversations[] = $conversationId;
             Cache::put('ai_conversations_' . session()->getId(), $conversations, now()->addDays(7));
         }
+    }
+
+    private function isApiImageInputError(?string $text): bool
+    {
+        if (!$text) return false;
+        $lower = strtolower($text);
+        if (str_contains($lower, 'image input')) return true;
+        if (str_contains($lower, 'image_url')) return true;
+        if (str_contains($lower, 'input_image')) return true;
+        if (str_contains($lower, 'this model')) return true;
+        if (str_contains($lower, 'unsupported')) return true;
+        return false;
     }
 }

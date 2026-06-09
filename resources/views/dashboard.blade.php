@@ -4,7 +4,7 @@
 
 @section('styles')
 <style>
-    /* Dashboard Styles */
+    /* Dashboard Styles - Keep all your existing styles */
     .welcome-banner {
         background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.05));
         border-radius: 24px;
@@ -241,7 +241,6 @@
         font-size: 1.2rem;
     }
     
-    /* Fixed Hash Preview - No Overlapping */
     .hash-preview {
         background: linear-gradient(135deg, #0f172a, #1e293b);
         border-radius: 12px;
@@ -452,89 +451,169 @@
         .copy-btn-sm { align-self: flex-end; }
         .hash-value-wrapper { overflow-x: scroll; }
     }
-    /* SSH Server Card Styles */
-.ssh-server-card {
-    background: white;
-    border-radius: 16px;
-    padding: 15px;
+    
+    .ssh-server-card {
+        background: white;
+        border-radius: 16px;
+        padding: 15px;
+        transition: all 0.3s ease;
+        border: 1px solid #e2e8f0;
+        margin-bottom: 12px;
+        cursor: pointer;
+    }
+    
+    .ssh-server-card:hover {
+        transform: translateX(5px);
+        border-color: var(--color-primary);
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+    }
+    
+    .ssh-server-name {
+        font-weight: 700;
+        color: var(--color-dark);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    
+    .ssh-server-name i {
+        color: var(--color-primary);
+    }
+    
+    .ssh-server-details {
+        font-size: 0.7rem;
+        color: #64748b;
+        margin-top: 5px;
+        display: flex;
+        gap: 15px;
+        flex-wrap: wrap;
+    }
+    
+    .ssh-server-status {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 5px;
+    }
+    
+    .status-online-dot {
+        background: #10b981;
+        box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+    }
+    
+    .status-offline-dot {
+        background: #ef4444;
+    }
+    
+    .status-unknown-dot {
+        background: #f59e0b;
+    }
+    
+    .quick-connect-btn {
+        background: var(--gradient-primary);
+        border: none;
+        border-radius: 10px;
+        padding: 8px 16px;
+        font-size: 0.75rem;
+        color: white;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    
+    .quick-connect-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    }
+    
+    .view-all-ssh {
+        text-align: center;
+        margin-top: 15px;
+        padding-top: 15px;
+        border-top: 1px solid #e2e8f0;
+    }
+    
+    .toast-notification {
+        position: fixed;
+        bottom: 100px;
+        right: 30px;
+        padding: 12px 20px;
+        border-radius: 10px;
+        z-index: 10002;
+        animation: slideUp 0.3s ease;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    
+    @keyframes slideUp {
+        from {
+            opacity: 0;
+            transform: translateY(20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    /* Ensure cursor pointer on buttons */
+    #toggleNumlockBtn, 
+    #toggleNumlockBtn:hover,
+    #toggleNumlockBtn:active,
+    #toggleNumlockBtn:focus {
+        cursor: pointer !important;
+    }
+
+    #toggleNumlockBtn:disabled {
+        cursor: wait !important;
+        opacity: 0.7;
+    }
+    /* Button cursor styles */
+    #toggleNumlockBtn {
+        cursor: pointer !important;
+        transition: all 0.3s ease;
+    }
+
+    #toggleNumlockBtn:hover {
+        transform: scale(1.05);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+
+    #toggleNumlockBtn:active {
+        transform: scale(0.95);
+    }
+
+    #toggleNumlockBtn:disabled {
+        cursor: wait !important;
+        opacity: 0.7;
+        transform: none;
+    }
+    /* Button cursor styles - ensures pointer cursor always shows */
+#toggleNumlockBtn {
+    cursor: pointer !important;
     transition: all 0.3s ease;
-    border: 1px solid #e2e8f0;
-    margin-bottom: 12px;
-    cursor: pointer;
+    position: relative;
+    z-index: 1;
 }
 
-.ssh-server-card:hover {
-    transform: translateX(5px);
-    border-color: var(--color-primary);
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+#toggleNumlockBtn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
-.ssh-server-name {
-    font-weight: 700;
-    color: var(--color-dark);
-    display: flex;
-    align-items: center;
-    gap: 8px;
+#toggleNumlockBtn:active {
+    transform: scale(0.95);
 }
 
-.ssh-server-name i {
-    color: var(--color-primary);
+#toggleNumlockBtn:disabled {
+    cursor: wait !important;
+    opacity: 0.7;
+    transform: none;
 }
 
-.ssh-server-details {
-    font-size: 0.7rem;
-    color: #64748b;
-    margin-top: 5px;
-    display: flex;
-    gap: 15px;
-    flex-wrap: wrap;
-}
-
-.ssh-server-status {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    margin-right: 5px;
-}
-
-.status-online-dot {
-    background: #10b981;
-    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
-}
-
-.status-offline-dot {
-    background: #ef4444;
-}
-
-.status-unknown-dot {
-    background: #f59e0b;
-}
-
-.quick-connect-btn {
-    background: var(--gradient-primary);
-    border: none;
-    border-radius: 10px;
-    padding: 8px 16px;
-    font-size: 0.75rem;
-    color: white;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.quick-connect-btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-}
-
-.view-all-ssh {
-    text-align: center;
-    margin-top: 15px;
-    padding-top: 15px;
-    border-top: 1px solid #e2e8f0;
+#toggleNumlockBtn i {
+    pointer-events: none;
 }
 </style>
 @endsection
@@ -672,8 +751,35 @@
                 </div>
             </div>
         </div>
-        
-        <!-- Quick Hash Generator - Fixed Layout -->
+
+        <!-- Num Lock Toggle -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="widget-section">
+                    <div class="widget-title">
+                        <i class="bi bi-keyboard"></i> 
+                        Num Lock Toggle
+                        <button id="toggleNumlockBtn" class="btn btn-sm ms-3" style="border-radius: 50%; width: 45px; height: 45px; background: var(--gradient-primary); color: white; border: none; transition: all 0.3s ease; cursor: pointer;">
+                            <i class="bi bi-play-fill" id="toggleIcon" style="font-size: 1.2rem; pointer-events: none;"></i>
+                        </button>
+                    </div>
+                    <div class="text-center">
+                        <div class="display-4 fw-bold mb-2">
+                            <span id="numlock-count" class="text-primary">0</span>
+                            <span class="fs-6 text-muted">toggles</span>
+                        </div>
+                        <div id="numlock-spinner" class="d-none mb-2">
+                            <div class="loading-spinner" style="width: 30px; height: 30px;"></div>
+                        </div>
+                        <div id="numlock-status" class="text-muted small">
+                            Click the <i class="bi bi-play-fill"></i> icon to start toggling Num Lock every 5 seconds
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Hash Generator -->
         <div class="row mt-4">
             <div class="col-12">
                 <div class="widget-section">
@@ -690,7 +796,7 @@
                             </select>
                         </div>
                         <div class="col-12">
-                            <button class="btn-primary-custom" onclick="generateQuickHash()">
+                            <button class="btn-primary-custom" onclick="generateQuickHash(event)">
                                 <i class="bi bi-shield-check"></i> Generate Hash
                             </button>
                         </div>
@@ -713,7 +819,7 @@
                 </div>
             </div>
         </div>
-        
+
         <!-- Bcrypt Generator Section - Fixed Layout -->
         <div class="row mt-4">
             <div class="col-12 col-lg-6">
@@ -730,7 +836,7 @@
                             <small class="text-muted">Higher rounds = more secure but slower (default: 10)</small>
                         </div>
                         <div class="col-12">
-                            <button class="btn-primary-custom" onclick="generateBcryptHash()">
+<button class="btn-primary-custom" onclick="generateBcryptHash(event)">
                                 <i class="bi bi-shield-check"></i> Generate Bcrypt Hash
                             </button>
                         </div>
@@ -783,6 +889,8 @@
                 </div>
             </div>
         </div>
+        
+
 
         <!-- SSH Servers Section -->
         <div class="row mt-4">
@@ -795,7 +903,7 @@
                     </div>
                     @if(count($recentConnections) > 0)
                         @foreach($recentConnections as $server)
-                            <div class="ssh-server-card" onclick="quickConnect('{{ $server['host'] }}', '{{ addslashes($server['ssh_command']) }}')">
+                            <div class="ssh-server-card" onclick="quickConnect('{{ $server['host'] }}', '{{ addslashes($server['ssh_command'] ?? '') }}')">
                                 <div class="d-flex justify-content-between align-items-center">
                                     <div class="ssh-server-name">
                                         <i class="bi bi-hdd-stack-fill"></i>
@@ -852,7 +960,7 @@
                         @endforeach
                         <div class="view-all-ssh">
                             <a href="{{ url('/ssh') }}" class="btn-outline-custom">
-                                <i class="bi bi-arrow-right"></i> View All Servers ({{ $totalServers }})
+                                <i class="bi bi-arrow-right"></i> View All Servers ({{ $totalServers ?? count($recentConnections) }})
                             </a>
                         </div>
                     @else
@@ -864,39 +972,47 @@
                     @endif
                 </div>
             </div>
-            
-            <div class="col-12 col-lg-6">
-                <div class="widget-section">
-                    <div class="widget-title">
-                        <i class="bi bi-lightning-charge-fill"></i>
-                        Quick Server Access
-                    </div>
-                    <div class="row g-2">
-                        @foreach(array_slice($sshServers, 0, 6) as $index => $server)
-                            <div class="col-12 col-sm-6">
-                                <div class="quick-action-card" onclick="quickConnect('{{ $server['host'] }}', '{{ addslashes($server['ssh_command']) }}')">
-                                    <i class="bi bi-hdd-stack-fill fs-4" style="color: var(--color-primary);"></i>
-                                    <div class="fw-bold mt-1">{{ $server['host'] }}</div>
-                                    <small class="text-muted">{{ $server['hostname'] }}</small>
-                                </div>
-                            </div>
-                        @endforeach
-                    </div>
-                    <div class="text-center mt-3">
-                        <a href="{{ url('/ssh') }}" class="btn-outline-custom">
-                            <i class="bi bi-plus-circle"></i> Add New Server
-                        </a>
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 </div>
 
 <script>
+// ============================================
 // CSRF Token
+// ============================================
 const csrfToken = '{{ csrf_token() }}';
 
+// ============================================
+// Toast Notification Function
+// ============================================
+function showToast(message, type) {
+    const existingToast = document.querySelector('.toast-notification');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = `toast-notification ${type}`;
+    toast.innerHTML = `<i class="bi ${type === 'success' ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill'} me-2"></i> ${message}`;
+    toast.style.background = type === 'success' ? '#10b981' : '#ef4444';
+    toast.style.color = 'white';
+    toast.style.position = 'fixed';
+    toast.style.bottom = '100px';
+    toast.style.right = '30px';
+    toast.style.padding = '12px 20px';
+    toast.style.borderRadius = '10px';
+    toast.style.zIndex = '10002';
+    toast.style.animation = 'slideUp 0.3s ease';
+    toast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.2)';
+    document.body.appendChild(toast);
+    setTimeout(() => { 
+        toast.style.opacity = '0'; 
+        toast.style.transform = 'translateY(20px)'; 
+        setTimeout(() => toast.remove(), 300); 
+    }, 3000);
+}
+
+// ============================================
+// Copy Functions
+// ============================================
 function copyCommand(command) {
     navigator.clipboard.writeText(command).then(() => showToast('Command copied to clipboard!', 'success')).catch(() => showToast('Failed to copy', 'error'));
 }
@@ -912,23 +1028,15 @@ function copyTextById(elementId) {
     }
 }
 
-function showToast(message, type) {
-    const existingToast = document.querySelector('.toast-notification');
-    if (existingToast) existingToast.remove();
-    
-    const toast = document.createElement('div');
-    toast.className = `toast-notification ${type}`;
-    toast.innerHTML = `<i class="bi ${type === 'success' ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill'} me-2"></i> ${message}`;
-    toast.style.cssText = `position:fixed; bottom:100px; right:30px; background:${type === 'success' ? '#10b981' : '#ef4444'}; color:white; padding:12px 20px; border-radius:10px; z-index:10002; animation:slideUp 0.3s ease; box-shadow:0 10px 30px rgba(0,0,0,0.2);`;
-    document.body.appendChild(toast);
-    setTimeout(() => { 
-        toast.style.opacity = '0'; 
-        toast.style.transform = 'translateY(20px)'; 
-        setTimeout(() => toast.remove(), 300); 
-    }, 3000);
+function quickConnect(host, sshCommand) {
+    showToast('Connecting to ' + host + '...', 'success');
 }
 
-async function generateQuickHash() {
+// ============================================
+// Hash Generation Functions
+// ============================================
+async function generateQuickHash(event) {
+    const btn = event.currentTarget;
     const input = document.getElementById('quickHashInput').value;
     const type = document.getElementById('quickHashType').value;
     
@@ -937,20 +1045,13 @@ async function generateQuickHash() {
         return; 
     }
     
-    const btn = event.target;
     const originalHtml = btn.innerHTML;
     btn.innerHTML = '<span class="loading-spinner"></span> Generating...';
     btn.disabled = true;
     
     try {
-        async function generateHash(message, algorithm) {
-            const msgBuffer = new TextEncoder().encode(message);
-            const hashBuffer = await crypto.subtle.digest(algorithm, msgBuffer);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        }
-        
         let hash;
+        
         if (type === 'md5') {
             const response = await fetch('{{ url("/hash-toolbox/hash-text") }}', {
                 method: 'POST',
@@ -961,14 +1062,15 @@ async function generateQuickHash() {
             hash = data.hash;
         } else {
             const algorithm = type === 'sha1' ? 'SHA-1' : 'SHA-256';
-            hash = await generateHash(input, algorithm);
+            const msgBuffer = new TextEncoder().encode(input);
+            const hashBuffer = await crypto.subtle.digest(algorithm, msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            hash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         }
         
         document.getElementById('hashValue').textContent = hash;
         document.getElementById('quickHashResult').style.display = 'block';
         showToast('Hash generated successfully!', 'success');
-        
-        // Scroll to result
         document.getElementById('quickHashResult').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } catch (error) {
         console.error('Error:', error);
@@ -979,7 +1081,8 @@ async function generateQuickHash() {
     }
 }
 
-async function generateBcryptHash() {
+async function generateBcryptHash(event) {
+    const btn = event.currentTarget;
     const password = document.getElementById('bcryptInput').value;
     const rounds = document.getElementById('bcryptRounds').value;
     
@@ -992,7 +1095,6 @@ async function generateBcryptHash() {
         return; 
     }
     
-    const btn = event.target;
     const originalHtml = btn.innerHTML;
     btn.innerHTML = '<span class="loading-spinner"></span> Generating...';
     btn.disabled = true;
@@ -1010,8 +1112,6 @@ async function generateBcryptHash() {
             hashElement.textContent = data.hash;
             document.getElementById('bcryptResult').style.display = 'block';
             showToast('Bcrypt hash generated!', 'success');
-            
-            // Scroll to result
             document.getElementById('bcryptResult').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } else {
             showToast(data.error || 'Failed to generate hash', 'error');
@@ -1024,5 +1124,258 @@ async function generateBcryptHash() {
         btn.disabled = false;
     }
 }
+
+// ============================================
+// Num Lock Functions - UPDATED WITH CURSOR FIX
+// ============================================
+let numlockPollingInterval = null;
+let isNumlockRunning = false;
+
+async function toggleNumlock() {
+    const btn = document.getElementById('toggleNumlockBtn');
+    const icon = document.getElementById('toggleIcon');
+    const spinner = document.getElementById('numlock-spinner');
+    const statusElement = document.getElementById('numlock-status');
+    const countElement = document.getElementById('numlock-count');
+    
+    if (!btn) return;
+    
+    if (isNumlockRunning) {
+        // Stop the script
+        if (spinner) spinner.classList.remove('d-none');
+        btn.disabled = true;
+        btn.style.cursor = 'wait';
+        btn.style.opacity = '0.7';
+        
+        try {
+            const response = await fetch('{{ url("/dashboard/numlock/stop") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                }
+            });
+            const data = await response.json();
+            
+            if (data.success) {
+                isNumlockRunning = false;
+                if (icon) icon.className = 'bi bi-play-fill';
+                btn.style.background = 'var(--gradient-primary)';
+                btn.style.cursor = 'pointer';
+                if (statusElement) {
+                    statusElement.innerHTML = 'Click the <i class="bi bi-play-fill"></i> icon to start toggling Num Lock every 5 seconds';
+                    statusElement.style.color = '#6c757d';
+                }
+                stopNumlockPolling();
+                if (countElement) countElement.textContent = '0';
+                showToast(data.message, 'success');
+            } else {
+                showToast(data.message || 'Error stopping script', 'error');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            showToast('Error stopping script', 'error');
+        } finally {
+            if (spinner) spinner.classList.add('d-none');
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.cursor = 'pointer';
+        }
+    } else {
+        // Start the script
+        if (spinner) spinner.classList.remove('d-none');
+        btn.disabled = true;
+        btn.style.cursor = 'wait';
+        btn.style.opacity = '0.7';
+        
+        try {
+            const response = await fetch('{{ url("/dashboard/numlock/start") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                }
+            });
+            const data = await response.json();
+            
+            if (data.success) {
+                isNumlockRunning = true;
+                if (icon) icon.className = 'bi bi-stop-fill';
+                btn.style.background = '#dc3545';
+                btn.style.cursor = 'pointer';
+                if (statusElement) {
+                    statusElement.innerHTML = '✓ Running - Toggling Num Lock every 5 seconds. Click the <i class="bi bi-stop-fill"></i> icon to stop.';
+                    statusElement.style.color = '#10b981';
+                }
+                startNumlockPolling();
+                showToast(data.message, 'success');
+            } else {
+                showToast(data.message || 'Failed to start script', 'error');
+                if (spinner) spinner.classList.add('d-none');
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.style.cursor = 'pointer';
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            showToast('Error starting script: ' + error.message, 'error');
+            if (spinner) spinner.classList.add('d-none');
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.cursor = 'pointer';
+        }
+    }
+}
+
+function startNumlockPolling() {
+    if (numlockPollingInterval) clearInterval(numlockPollingInterval);
+    numlockPollingInterval = setInterval(async () => {
+        try {
+            const response = await fetch('{{ url("/dashboard/numlock/status") }}', {
+                method: 'GET',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                }
+            });
+            
+            if (!response.ok) {
+                console.error('Status endpoint returned:', response.status);
+                return;
+            }
+            
+            const data = await response.json();
+            const countElement = document.getElementById('numlock-count');
+            const icon = document.getElementById('toggleIcon');
+            const btn = document.getElementById('toggleNumlockBtn');
+            const statusElement = document.getElementById('numlock-status');
+            
+            if (countElement && data.count !== undefined) {
+                countElement.textContent = data.count;
+            }
+            
+            // Sync the running state and ensure cursor is correct
+            if (data.is_running !== isNumlockRunning) {
+                isNumlockRunning = data.is_running;
+                if (isNumlockRunning) {
+                    if (icon) icon.className = 'bi bi-stop-fill';
+                    if (btn) {
+                        btn.style.background = '#dc3545';
+                        btn.style.cursor = 'pointer';
+                    }
+                    if (statusElement) {
+                        statusElement.innerHTML = '✓ Running - Toggling Num Lock every 5 seconds. Click the <i class="bi bi-stop-fill"></i> icon to stop.';
+                        statusElement.style.color = '#10b981';
+                    }
+                } else {
+                    if (icon) icon.className = 'bi bi-play-fill';
+                    if (btn) {
+                        btn.style.background = 'var(--gradient-primary)';
+                        btn.style.cursor = 'pointer';
+                    }
+                    if (statusElement) {
+                        statusElement.innerHTML = 'Click the <i class="bi bi-play-fill"></i> icon to start toggling Num Lock every 5 seconds';
+                        statusElement.style.color = '#6c757d';
+                    }
+                }
+            } else {
+                // Ensure cursor is always pointer when not disabled
+                if (btn && !btn.disabled && btn.style.cursor !== 'pointer') {
+                    btn.style.cursor = 'pointer';
+                }
+            }
+        } catch (error) {
+            console.error('Error fetching status:', error);
+        }
+    }, 1000);
+}
+
+function stopNumlockPolling() {
+    if (numlockPollingInterval) {
+        clearInterval(numlockPollingInterval);
+        numlockPollingInterval = null;
+    }
+}
+
+// ============================================
+// DOM Initialization
+// ============================================
+document.addEventListener('DOMContentLoaded', function() {
+    // Setup Num Lock toggle button with proper cursor
+    const toggleBtn = document.getElementById('toggleNumlockBtn');
+    if (toggleBtn) {
+        // Set initial cursor and styling
+        toggleBtn.style.cursor = 'pointer';
+        
+        // Remove any existing listeners to prevent duplicates
+        const newBtn = toggleBtn.cloneNode(true);
+        toggleBtn.parentNode.replaceChild(newBtn, toggleBtn);
+        
+        // Add click event listener to new button
+        newBtn.addEventListener('click', toggleNumlock);
+        
+        // Ensure cursor stays pointer on the new button
+        newBtn.style.cursor = 'pointer';
+        
+        // Make icon non-interactive so clicks go to button
+        const icon = document.getElementById('toggleIcon');
+        if (icon) {
+            icon.style.pointerEvents = 'none';
+        }
+    }
+    
+    // Check initial status on page load
+    async function checkInitialStatus() {
+        try {
+            const response = await fetch('{{ url("/dashboard/numlock/status") }}', {
+                method: 'GET',
+                headers: { 'X-CSRF-TOKEN': '{{ csrf_token() }}' }
+            });
+            
+            if (!response.ok) {
+                console.error('Status check failed:', response.status);
+                return;
+            }
+            
+            const data = await response.json();
+            
+            const countElement = document.getElementById('numlock-count');
+            const icon = document.getElementById('toggleIcon');
+            const btn = document.getElementById('toggleNumlockBtn');
+            const statusElement = document.getElementById('numlock-status');
+            
+            if (countElement && data.count !== undefined) {
+                countElement.textContent = data.count;
+            }
+            
+            if (btn) {
+                btn.style.cursor = 'pointer';
+            }
+            
+            if (data.is_running) {
+                isNumlockRunning = true;
+                if (icon) icon.className = 'bi bi-stop-fill';
+                if (btn) btn.style.background = '#dc3545';
+                if (statusElement) {
+                    statusElement.innerHTML = '✓ Running - Toggling Num Lock every 5 seconds. Click the <i class="bi bi-stop-fill"></i> icon to stop.';
+                    statusElement.style.color = '#10b981';
+                }
+                startNumlockPolling();
+            } else {
+                isNumlockRunning = false;
+                if (icon) icon.className = 'bi bi-play-fill';
+                if (btn) btn.style.background = 'var(--gradient-primary)';
+                if (statusElement) {
+                    statusElement.innerHTML = 'Click the <i class="bi bi-play-fill"></i> icon to start toggling Num Lock every 5 seconds';
+                    statusElement.style.color = '#6c757d';
+                }
+            }
+        } catch (error) {
+            console.error('Error checking status:', error);
+        }
+    }
+    
+    checkInitialStatus();
+});
 </script>
 @endsection

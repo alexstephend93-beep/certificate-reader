@@ -163,32 +163,33 @@ function renderServers(hosts) {
         const sshCommand = host.ssh_command || `ssh ${host.host}`;
         const port = host.port || 22;
         const domainsHtml = host.domains && host.domains.length > 0 
-            ? host.domains.map(d => `
-                <span class="domain-tag">
-                    <i class="bi bi-link-45deg"></i> ${d}
-                </span>
-            `).join('')
-            : '';
-        
-        const vscodeDomainsHtml = host.domains && host.domains.length > 0
-            ? `
-                <div class="domain-tags-container">
-                    ${host.domains.map(d => `
-                        <div class="domain-vscode-icon" title="Open ${d} in VS Code">
-                            <i class="bi bi-code-square domain-blink-fast icon-vscode"
-                               data-domain="${d}"
-                               data-host="${host.host}"
-                               data-hostname="${host.hostname}"
-                               data-user="${host.user}"
-                               data-identity="${escapeHtml(host.identity_file || '')}"
-                               data-port="${port}"
-                               onclick="openSpecificDomainInVSCode(this)">
-                            </i>
-                        </div>
-                    `).join('')}
+            ? host.domains.map(d => {
+                const safeDomain = escapeHtml(d).replace(/'/g, "\\'");
+                return `
+                <div class="server-detail" style="flex-wrap: wrap;">
+                    <i class="bi bi-globe2" title="Domain"></i>
+                    <span class="detail-value">https://${escapeHtml(d)}</span>
+                    <i class="bi bi-copy icon-copy" title="Copy domain"
+                       style="margin-left: 6px; cursor: pointer;"
+                       onclick="event.stopPropagation(); copyToClipboard('https://${safeDomain}', 'https://${safeDomain} copied to clipboard')"></i>
+                    <i class="bi bi-link-45deg" title="Open in browser"
+                       style="margin-left: 4px; cursor: pointer;"
+                       onclick="event.stopPropagation(); window.open('https://${safeDomain}', '_blank')"></i>
+                    <i class="bi bi-code-square icon-vscode" title="Open project in VS Code"
+                       style="margin-left: 4px; cursor: pointer;"
+                       onclick="event.stopPropagation(); openSpecificDomainInVSCode(this)" 
+                       data-domain="${d}"
+                       data-host="${host.host}"
+                       data-hostname="${host.hostname}"
+                       data-user="${host.user}"
+                       data-identity="${escapeHtml(host.identity_file || '')}"
+                       data-port="${port}"></i>
                 </div>
-            `
-            : `<div class="text-muted small" style="margin-top: 8px;"><i class="bi bi-info-circle" title="No domains configured"></i></div>`;
+            `;
+            }).join('')
+            : `<div class="server-detail"><i class="bi bi-globe2" title="Domains"></i><span class="detail-value text-muted">N/A</span></div>`;
+        
+        const vscodeDomainsHtml = '';
         
         const lastConnectedHtml = host.last_connected
             ? `<div class="last-connected"><i class="bi bi-clock-history"></i> Last connected: ${formatTimeAgo(host.last_connected)}</div>`
@@ -230,10 +231,15 @@ function renderServers(hosts) {
                     </div>
                     
                     <div class="server-body">
-                        <div class="server-detail">
-                            <i class="bi bi-geo-alt-fill" title="HostName"></i>
-                            <span class="detail-value server-hostname">${host.hostname || 'N/A'}</span>
-                        </div>
+                    <div class="server-detail">
+                        <i class="bi bi-geo-alt-fill" title="HostName"></i>
+                        <span class="detail-value server-hostname">${host.hostname || 'N/A'}</span>
+                        <i class="bi bi-copy icon-copy"
+                           title="Copy hostname"
+                           style="margin-left: 6px; cursor: pointer;"
+                           onclick="event.stopPropagation(); copyToClipboard('${escapeHtml(host.hostname || '')}', 'Hostname copied to clipboard')"></i>
+                    </div>
+
                         
                         <div class="server-detail">
                             <i class="bi bi-person-fill" title="User"></i>
@@ -247,12 +253,7 @@ function renderServers(hosts) {
                             </span>
                         </div>
                         ${portHtml}
-                        ${host.domains && host.domains.length > 0 ? `
-                            <div class="server-detail">
-                                <i class="bi bi-globe2" title="Domains"></i>
-                                <span class="detail-value server-domains">${domainsHtml}</span>
-                            </div>
-                        ` : ''}
+                        ${domainsHtml}
                         
                         <div class="server-actions">
                             <i class="bi bi-folder2-open icon-folder" title="Browse Projects" onclick='browseProjects("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
@@ -260,7 +261,7 @@ function renderServers(hosts) {
                             <i class="bi bi-heart-pulse icon-diagnose" title="Diagnose Connection" onclick="diagnoseServer('${host.host}', this)"></i>
                             ${vscodeDomainsHtml}
                              <i class="bi bi-clipboard2-check icon-copy" title="Copy SSH command" onclick='copySshCommand("${host.host}")'></i>
-                            <i class="bi bi-terminal-fill icon-terminal" title="Open in terminal" onclick='openTerminal("${escapeHtml(sshCommand)}")'></i>
+                             <i class="bi bi-heart-pulse icon-diagnose" title="Proxy Server Health Checkup" onclick='showProxyHealth("${host.host}", this)'></i>
                             <div class="test-wrapper">
                                 <i class="bi bi-plug-fill icon-test" title="Test server connection" onclick='testSingleConnection(this, ${index}, "${host.hostname}", ${port})'></i>
                                 <span class="testing-spinner"></span>
@@ -284,7 +285,22 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function copyToClipboard(text, successMessage = 'Copied to clipboard') {
+    if (!text) {
+        showToast('Nothing to copy', 'warning');
+        return;
+    }
+
+    navigator.clipboard.writeText(text)
+        .then(() => showToast(successMessage, 'success'))
+        .catch(err => {
+            console.error('Clipboard copy failed:', err);
+            showToast('Failed to copy. Please copy manually.', 'danger');
+        });
+}
+
 function basename(path) {
+
     if (!path) return 'N/A';
     return path.split('/').pop();
 }
@@ -964,6 +980,375 @@ function openTerminal(command) {
     // This would typically open a terminal, but in web context we can show the command
     showToast('Terminal command: ' + command, 'info');
     console.log('Terminal command:', command);
+}
+
+function showProxyHealth(host, element) {
+    const icon = element || null;
+    const originalClass = icon ? icon.className : 'bi bi-heart-pulse icon-diagnose';
+    
+    let blinkInterval = null;
+    if (icon) {
+        let showHourglass = true;
+        blinkInterval = setInterval(() => {
+            showHourglass = !showHourglass;
+            icon.className = showHourglass ? 'bi bi-hourglass-split' : 'bi bi-hourglass';
+        }, 400);
+    }
+    
+    showToast(`Checking proxy health for ${host}...`, 'info');
+
+    fetch('/ssh/proxy-health/' + encodeURIComponent(host), {
+        headers: {
+            'Accept': 'application/json'
+        }
+    })
+    .then(response => {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.json();
+    })
+    .then(data => {
+        if (blinkInterval) clearInterval(blinkInterval);
+        if (icon) icon.className = originalClass;
+        if (data.success) {
+            try {
+                showProxyHealthModal(host, data.health);
+            } catch (modalErr) {
+                console.error('Modal render error:', modalErr);
+                showToast('Health data received but failed to render. Check console.', 'warning');
+            }
+        } else {
+            showToast('Failed to get proxy health: ' + (data.message || 'Unknown error'), 'danger');
+        }
+    })
+    .catch(error => {
+        if (blinkInterval) clearInterval(blinkInterval);
+        if (icon) icon.className = originalClass;
+        console.error('Health fetch error:', error);
+        showToast('Failed to get proxy health: ' + error.message, 'danger');
+    });
+}
+
+function showProxyHealthModal(host, health) {
+    const statusColor = {
+        'healthy': '#10b981',
+        'warning': '#f59e0b',
+        'error': '#ef4444',
+        'unknown': '#64748b'
+    };
+    const statusColorClass = health.overall_status || 'unknown';
+    const color = statusColor[statusColorClass] || '#64748b';
+
+    let detailsHtml = '';
+    try {
+        if (health.details && typeof health.details === 'object') {
+            detailsHtml = buildHealthDetails(health);
+        }
+    } catch (err) {
+        console.error('Health details render error:', err, health);
+        detailsHtml = '<div class="alert alert-warning">Error rendering health details. Raw data logged to console.</div>';
+    }
+
+    let modalHtml = `
+        <div class="modal fade" id="proxyHealthModal" tabindex="-1">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-content" style="border-radius: 20px; overflow: hidden;">
+                    <div class="modal-header" style="background: linear-gradient(135deg, #059669 0%, #0d9488 100%); border-bottom: none;">
+                        <h5 class="modal-title text-white">
+                            <i class="bi bi-heart-pulse-fill me-2"></i>Proxy Server Health - ${escapeHtml(host)}
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body" style="padding: 24px;">
+                        <div class="text-center mb-4">
+                            <h6 class="text-muted mb-2">Overall Status</h6>
+                            <div class="badge px-4 py-2 fs-6" style="background: ${color}; color: white; border-radius: 10px;">
+                                ${escapeHtml(statusColorClass.toUpperCase())}
+                            </div>
+                        </div>
+                        <hr class="my-4">
+                        ${detailsHtml || '<p class="text-muted text-center">No health details available.</p>'}
+                    </div>
+                    <div class="modal-footer" style="border-top: 1px solid #e2e8f0;">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="button" class="btn btn-primary" onclick="bootstrap.Modal.getInstance(document.getElementById('proxyHealthModal')).hide(); showProxyHealth('${escapeHtml(host)}', document.querySelector('[data-host-health=\"${escapeHtml(host)}\"]'))">
+                            <i class="bi bi-arrow-clockwise me-1"></i> Refresh
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const existingModal = document.getElementById('proxyHealthModal');
+    if (existingModal) existingModal.remove();
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    try {
+        new bootstrap.Modal(document.getElementById('proxyHealthModal')).show();
+    } catch (e) {
+        console.error('Bootstrap modal show error:', e);
+        showToast('Failed to open health modal, but data was received.', 'warning');
+    }
+}
+
+function buildHealthDetails(health) {
+    const multilineKeys = new Set([
+        'cpu_usage_top', 'memory_usage_top', 'cpu_usage_ps', 'disk_io',
+        'outbound_connections', 'systemd_failed_services',
+        'open_ports', 'established_connections', 'load_average', 'timezone', 'language', 'ufw'
+    ]);
+
+    function renderValue(key, value) {
+        const str = String(value ?? 'N/A').trim();
+        const isEmpty = !str || str === 'N/A';
+        if (multilineKeys.has(key) && str.includes('\n')) {
+            return `<pre class="bg-light p-2 rounded small mb-0" style="max-height:220px;overflow:auto;">${escapeHtml(str)}</pre>`;
+        }
+        if (key === 'ssl_cert_check' || key.startsWith('ssl_')) {
+            const beforeMatch = str.match(/notBefore=(.*)/);
+            const afterMatch = str.match(/notAfter=(.*)/);
+            const start = beforeMatch ? beforeMatch[1].trim() : null;
+            const end = afterMatch ? afterMatch[1].trim() : null;
+            if (end) {
+                const daysLeft = Math.max(0, Math.ceil((new Date(end).getTime() - Date.now()) / 86400000));
+                return `<span class="small">${start ? escapeHtml(start) : ''} → <strong>${escapeHtml(end)}</strong> <span class="text-muted">(${daysLeft}d left)</span></span>`;
+            }
+        }
+        if (isEmpty) return '<span class="text-muted">N/A</span>';
+        return escapeHtml(str);
+    }
+
+    function healthBadge(key, val) {
+        const str = String(val ?? '').trim().toLowerCase();
+        const num = parseInt(String(val ?? '').trim(), 10);
+        switch (key) {
+            case 'uptime':
+                return '<i class="bi bi-check-circle-fill text-success"></i>';
+            case 'load_average': {
+                const parts = str.split(/[ ,]+/);
+                const load1 = parseFloat(parts[parts.length - 3] || '0');
+                const load15 = parseFloat(parts[parts.length - 1] || '0');
+                const cpuCount = parseInt(health.details.cpu_count || '1', 10);
+                const avg = (load1 + load15) / 2;
+                if (avg > cpuCount * 2) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                if (avg > cpuCount) return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+                return '<i class="bi bi-check-circle-fill text-success"></i>';
+            }
+            case 'cpu_usage': {
+                const m = str.match(/([0-9.]+)%\s*us/);
+                const pct = m ? parseFloat(m[1]) : 0;
+                if (pct > 85) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                if (pct > 55) return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+                if (pct > 0) return '<i class="bi bi-check-circle-fill text-success"></i>';
+                return '<i class="bi bi-info-circle-fill text-info"></i>';
+            }
+            case 'memory': {
+                const parts = str.split(/\s+/);
+                const idx = parts.indexOf('Mi') > -1 ? parts.indexOf('Mi') - 1 : parts.indexOf('Gi') - 1;
+                if (idx < 0) return '<i class="bi bi-info-circle-fill text-info"></i>';
+                const total = parseFloat(parts[idx] || '0');
+                const used = parseFloat(parts[idx + 2] || '0');
+                if (total > 0 && (used / total) > 0.92) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                if (total > 0 && (used / total) > 0.75) return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+                return '<i class="bi bi-check-circle-fill text-success"></i>';
+            }
+            case 'disk_usage': {
+                const m = str.match(/(\d+)%/);
+                if (m) {
+                    const pct = parseInt(m[1], 10);
+                    if (pct >= 95) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                    if (pct >= 80) return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+                    if (pct >= 50) return '<i class="bi bi-info-circle-fill text-info"></i>';
+                    return '<i class="bi bi-check-circle-fill text-success"></i>';
+                }
+                return '<i class="bi bi-info-circle-fill text-info"></i>';
+            }
+            case 'inodes': {
+                const m = str.match(/(\d+)%/);
+                if (m) {
+                    const pct = parseInt(m[1], 10);
+                    if (pct >= 95) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                    if (pct >= 80) return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+                    return '<i class="bi bi-check-circle-fill text-success"></i>';
+                }
+                return '<i class="bi bi-info-circle-fill text-info"></i>';
+            }
+            case 'cpu_info':
+            case 'architecture':
+            case 'language':
+            case 'timezone':
+            case 'cpu_count':
+                return '<i class="bi bi-info-circle-fill text-info"></i>';
+            case 'kernel':
+            case 'os': {
+                if (str === 'n/a') return '<i class="bi bi-question-circle-fill text-muted"></i>';
+                return '<i class="bi bi-check-circle-fill text-success"></i>';
+            }
+            case 'hostname_resolved':
+            case 'current_user':
+            case 'home_directory':
+                return str === 'n/a' ? '<i class="bi bi-question-circle-fill text-muted"></i>' : '<i class="bi bi-check-circle-fill text-success"></i>';
+            case 'ssh_service':
+                return str === 'active' ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+            case 'fail2ban':
+            case 'cron_status':
+            case 'anacron_status':
+                return str === 'active' ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+            case 'ufw':
+                return /active/.test(str) ? '<i class="bi bi-check-circle-fill text-success"></i>' : (str === 'n/a' ? '<i class="bi bi-question-circle-fill text-muted"></i>' : '<i class="bi bi-exclamation-circle-fill text-warning"></i>');
+            case 'swap': {
+                const parts = str.split(/\s+/);
+                const idx = parts.indexOf('Mi') > -1 ? parts.indexOf('Mi') - 1 : (parts.indexOf('Gi') > -1 ? parts.indexOf('Gi') - 1 : -1);
+                if (idx < 1) return '<i class="bi bi-info-circle-fill text-info"></i>';
+                const total = parseFloat(parts[idx] || '0');
+                const used = parseFloat(parts[idx + 2] || '0');
+                if (total > 0 && (used / total) > 0.8) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                if (total > 0 && (used / total) > 0.5) return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+                return '<i class="bi bi-check-circle-fill text-success"></i>';
+            }
+            case 'pending_updates': {
+                if (num === 0) return '<i class="bi bi-check-circle-fill text-success"></i>';
+                if (num > 100) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                if (num > 50) return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+                return '<i class="bi bi-info-circle-fill text-info"></i>';
+            }
+            case 'sshd_failed_logins': {
+                if (isNaN(num)) return '<i class="bi bi-info-circle-fill text-info"></i>';
+                if (num === 0) return '<i class="bi bi-check-circle-fill text-success"></i>';
+                if (num > 20) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+            }
+            case 'zombie_processes': {
+                if (isNaN(num)) return '<i class="bi bi-info-circle-fill text-info"></i>';
+                if (num === 0) return '<i class="bi bi-check-circle-fill text-success"></i>';
+                if (num > 5) return '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+                return '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+            }
+            case 'key_exists':
+                return val ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+            case 'key_permissions': {
+                const ps = String(val ?? '').trim();
+                return (ps === '0400' || ps === '0600') ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+            }
+            case 'key_size_bytes': {
+                if (isNaN(num)) return '<i class="bi bi-info-circle-fill text-info"></i>';
+                return num > 0 ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-exclamation-triangle-fill text-danger"></i>';
+            }
+            default:
+                return '<i class="bi bi-info-circle-fill text-info"></i>';
+        }
+    }
+
+    const allSections = [
+        { title: '🖥️ System', keys: ['uptime','load_average','memory','disk_usage','os','kernel','architecture','hostname_resolved','current_user','home_directory','timezone','language','last_reboot'] },
+        { title: '📦 Packages', keys: ['pending_updates'] },
+        { title: '🔒 Services', keys: ['ssh_service','fail2ban','ufw','cron_status','anacron_status','systemd_failed_services'] },
+        { title: '💻 CPU', keys: ['cpu_count','cpu_info','cpu_usage','cpu_usage_top','cpu_usage_ps'] },
+        { title: '🧠 Memory & Swap', keys: ['memory','swap','memory_usage_top'] },
+        { title: '💾 Disk & I/O', keys: ['disk_usage','disk_io','inodes'] },
+        { title: '🔄 Processes', keys: ['total_processes','zombie_processes'] },
+        { title: '🌐 Network', keys: ['open_ports','established_connections','outbound_connections'] },
+        { title: '📡 Time & Clock', keys: ['ntp_sync'] },
+        { title: '🔐 Proxy Key', keys: ['key_exists','key_path','key_permissions','key_size_bytes'] },
+        { title: '🚪 Limits', keys: ['open_fd','fd_limit'] },
+        { title: '🔑 Security', keys: ['sshd_failed_logins'] },
+        { title: '🔗 Connection', keys: ['connection'] },
+    ];
+
+    let detailsHtml = '';
+    try {
+        allSections.forEach(sec => {
+            const rows = sec.keys.filter(k => health.details[k] !== undefined);
+            if (!rows.length) return;
+            detailsHtml += `<div class="mb-3"><h6 class="text-uppercase text-muted fw-bold mb-2" style="letter-spacing:0.5px;font-size:0.75rem;">${sec.title}</h6>`;
+            rows.forEach(key => {
+                const val = health.details[key];
+                const label = key.replace(/\./g, ' ').replace(/([A-Z])/g, ' $1').replace(/\b\w/g, c => c.toUpperCase());
+                const isBool = typeof val === 'boolean';
+                let display = '';
+                if (isBool) {
+                    display = val
+                        ? '<span class="text-success"><i class="bi bi-check-circle-fill"></i> OK</span>'
+                        : '<span class="text-danger"><i class="bi bi-x-circle-fill"></i> Failed</span>';
+                } else if (key === 'connection') {
+                    display = val
+                        ? '<span class="text-success"><i class="bi bi-check-circle-fill"></i> Connected</span>'
+                        : '<span class="text-danger"><i class="bi bi-x-circle-fill"></i> Failed</span>';
+                } else {
+                    const numericKeys = ['pending_updates','total_processes','zombie_processes','sshd_failed_logins','cpu_count','open_ports','established_connections'];
+                    if (numericKeys.includes(key)) {
+                        const n = parseInt(String(val), 10);
+                        if (!isNaN(n)) {
+                            const bcls = key === 'sshd_failed_logins' && n > 0 ? 'bg-danger' : (n === 0 ? 'bg-success' : 'bg-info');
+                            display = `<span class="badge ${bcls}">${n}</span>`;
+                        } else {
+                            display = renderValue(key, val);
+                        }
+                    } else {
+                        try { display = renderValue(key, val); } catch (e) { display = escapeHtml(String(val)); }
+                    }
+                }
+                let badge = '';
+                try { badge = healthBadge(key, val); } catch (e) { badge = '<i class="bi bi-info-circle-fill text-muted"></i>'; }
+                detailsHtml += `
+                    <div class="row mb-2 align-items-center">
+                        <div class="col-sm-3 fw-semibold small">${badge} ${escapeHtml(label)}</div>
+                        <div class="col-sm-9">${display}</div>
+                    </div>`;
+            });
+            detailsHtml += '</div>';
+        });
+
+        const sslEntries = Object.entries(health.details).filter(([k, v]) => (k.startsWith('ssl_') || k.startsWith('ssl_raw_')) && k !== 'ssl_cert_check' && typeof v === 'string' && (v.includes('notAfter=') || v.includes('Protocol')));
+        if (sslEntries.length) {
+            detailsHtml += `<div class="mb-3"><h6 class="text-uppercase text-muted fw-bold mb-2" style="letter-spacing:0.5px;font-size:0.75rem;">🔐 SSL Certificates</h6>`;
+            sslEntries.forEach(([key, raw]) => {
+                const label = key.replace(/^ssl_raw_/, '').replace(/^ssl_/, '').replace(/_/g, '.');
+                if (key.startsWith('ssl_raw_')) {
+                    const protocol = raw.match(/Protocol\s+:\s*(\S+)/i);
+                    const cipher = raw.match(/Cipher\s+:\s*(\S+)/i);
+                    detailsHtml += `
+                        <div class="row mb-2 align-items-center">
+                            <div class="col-sm-3 fw-semibold small"><i class="bi bi-shield-lock text-info"></i> ${escapeHtml(label)}</div>
+                            <div class="col-sm-9">
+                                <span class="badge bg-info me-1">${escapeHtml(protocol ? protocol[1] : 'N/A')}</span>
+                                <span class="badge bg-success">${escapeHtml(cipher ? cipher[1].replace(/0x[0-9a-f]+/i, '').trim() : 'N/A')}</span>
+                            </div>
+                        </div>`;
+                } else {
+                    const beforeMatch = raw.match(/notBefore=(.*)/);
+                    const afterMatch = raw.match(/notAfter=(.*)/);
+                    const issuerMatch = raw.match(/Issuer: (.*)/);
+                    const subjectMatch = raw.match(/Subject: (.*)/);
+                    const sanMatch = raw.match(/X509v3 Subject Alternative Name: \n\s*(.*)/);
+                    const notBefore = beforeMatch ? beforeMatch[1].trim() : null;
+                    const notAfter = afterMatch ? afterMatch[1].trim() : null;
+                    const daysLeft = notAfter ? Math.max(0, Math.ceil((new Date(notAfter).getTime() - Date.now()) / 86400000)) : null;
+                    let badge = '';
+                    if (daysLeft === null) badge = '<span class="badge bg-secondary">Unknown</span>';
+                    else if (daysLeft === 0) badge = '<span class="badge bg-danger">Expired</span>';
+                    else if (daysLeft < 7) badge = `<span class="badge bg-danger">${daysLeft}d left</span>`;
+                    else if (daysLeft < 30) badge = `<span class="badge bg-warning text-dark">${daysLeft}d left</span>`;
+                    else badge = `<span class="badge bg-success">${daysLeft}d left</span>`;
+                    detailsHtml += `
+                        <div class="row mb-2 align-items-center">
+                            <div class="col-sm-3 fw-semibold small"><i class="bi bi-shield-check text-info"></i> ${escapeHtml(label)}</div>
+                            <div class="col-sm-9">
+                                <div class="small text-muted mb-1">${notBefore ? escapeHtml(notBefore) : ''} → <strong>${notAfter ? escapeHtml(notAfter) : 'N/A'}</strong> ${badge}</div>
+                                ${subjectMatch ? `<div class="small"><strong>Subject:</strong> <span class="text-break">${escapeHtml(subjectMatch[1].trim())}</span></div>` : ''}
+                                ${issuerMatch ? `<div class="small"><strong>Issuer:</strong> <span class="text-break">${escapeHtml(issuerMatch[1].trim())}</span></div>` : ''}
+                                ${sanMatch ? `<div class="small"><strong>SAN:</strong> <span class="text-break">${escapeHtml(sanMatch[1].trim())}</span></div>` : ''}
+                            </div>
+                        </div>`;
+                }
+            });
+            detailsHtml += '</div>';
+        }
+    } catch (err) {
+        console.error('Health details inner render error:', err);
+        detailsHtml += '<div class="alert alert-danger small">Partial render error. Check console.</div>';
+    }
+
+    return detailsHtml;
 }
 
 function testSingleConnection(element, index, hostname, port) {
