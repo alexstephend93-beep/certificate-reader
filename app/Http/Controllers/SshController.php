@@ -647,7 +647,10 @@ class SshController extends Controller
             // Add domains as comments
             if (!empty($host['domains'])) {
                 foreach ($host['domains'] as $domain) {
-                    $content .= "    #Domain https://{$domain}\n";
+                    // Clean protocol from domain
+                    $cleanDomain = preg_replace('#^https?://#', '', $domain);
+                    $cleanDomain = rtrim($cleanDomain, '/');
+                    $content .= "    #Domain https://{$cleanDomain}\n";
                 }
             }
 
@@ -765,18 +768,12 @@ class SshController extends Controller
 
             $hosts = $this->parseSshConfigWithDomains();
 
-            // For adding new servers, we allow any valid identity file path
-            // The file doesn't need to exist yet - it will be used when connecting
-            if (empty($request->identity_file)) {
-                $errorMsg = 'Identity file is required';
-                if ($isJsonRequest) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => $errorMsg
-                    ]);
-                }
-                return redirect()->route('ssh.index')->with('error', $errorMsg);
-            }
+            // Clean domains: remove protocol and trailing slashes
+            $cleanDomains = array_filter($request->domains ?? []);
+            $cleanDomains = array_map(function($d) {
+                $d = preg_replace('#^https?://#', '', $d);
+                return rtrim($d, '/');
+            }, $cleanDomains);
 
             // Add the new host to the hosts array
             $newHost = [
@@ -785,7 +782,7 @@ class SshController extends Controller
                 'user' => $request->user,
                 'identity_file' => $request->identity_file,
                 'port' => $request->port ?? 22,
-                'domains' => array_filter($request->domains ?? []),
+                'domains' => $cleanDomains,
                 'description' => $request->description ?? ''
             ];
 

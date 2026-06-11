@@ -1691,3 +1691,178 @@ html {
     background: #fce7f3;
     transform: translateY(-2px) scale(1.1);
 }
+
+/* Connection test visual feedback */
+.server-card-wrapper.connection-success {
+    animation: connectionSuccessPulse 1s ease-in-out;
+}
+
+@keyframes connectionSuccessPulse {
+    0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+    50% { box-shadow: 0 0 0 15px rgba(16, 185, 129, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+.server-card-wrapper.connection-failed {
+    animation: connectionFailedPulse 1s ease-in-out;
+}
+
+@keyframes connectionFailedPulse {
+    0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+    50% { box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.icon-test.connection-tested-success {
+    color: #10b981 !important;
+    background: #dcfce7 !important;
+    border-color: #4ade80 !important;
+}
+
+.icon-test.connection-tested-failed {
+    color: #ef4444 !important;
+    background: #fee2e2 !important;
+    border-color: #fca5a5 !important;
+}
+
+/* Connection test styles - Permanent colors that persist on hover */
+.server-card.connection-success {
+    border: 2px solid #10b981 !important;
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.05)) !important;
+    box-shadow: 0 4px 15px rgba(16, 185, 129, 0.2) !important;
+    transition: all 0.3s ease;
+}
+
+.server-card.connection-success:hover {
+    border: 2px solid #10b981 !important;
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(16, 185, 129, 0.08)) !important;
+    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.3) !important;
+}
+
+.server-card.connection-failed {
+    border: 2px solid #ef4444 !important;
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(239, 68, 68, 0.05)) !important;
+    box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2) !important;
+    transition: all 0.3s ease;
+}
+
+.server-card.connection-failed:hover {
+    border: 2px solid #ef4444 !important;
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(239, 68, 68, 0.08)) !important;
+    box-shadow: 0 6px 20px rgba(239, 68, 68, 0.3) !important;
+}
+
+/* Test wrapper icon colors - Permanent */
+.test-wrapper.test-success i.icon-test {
+    color: #10b981 !important;
+}
+
+.test-wrapper.test-failed i.icon-test {
+    color: #ef4444 !important;
+}
+
+/* Hover effects for test icons - Keep the same color */
+.test-wrapper.test-success:hover i.icon-test {
+    color: #10b981 !important;
+    transform: scale(1.1);
+}
+
+.test-wrapper.test-failed:hover i.icon-test {
+    color: #ef4444 !important;
+    transform: scale(1.1);
+}
+
+/* Blink animations */
+@keyframes blink-success {
+    0%, 100% {
+        border-color: #10b981;
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    }
+    50% {
+        border-color: #10b981;
+        box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+    }
+}
+
+@keyframes blink-failed {
+    0%, 100% {
+        border-color: #ef4444;
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    }
+    50% {
+        border-color: #ef4444;
+        box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+    }
+}
+
+@keyframes blink-icon {
+    0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.5;
+        transform: scale(1.2);
+    }
+}
+
+.blink-success {
+    animation: blink-success 0.5s ease-in-out 2;
+}
+
+.blink-failed {
+    animation: blink-failed 0.5s ease-in-out 2;
+}
+
+.blink-icon {
+    animation: blink-icon 0.5s ease-in-out 2;
+}
+
+/* Keep the connection status badge color consistent */
+.server-card.connection-success .server-name {
+    color: #10b981 !important;
+}
+
+.server-card.connection-failed .server-name {
+    color: #ef4444 !important;
+}
+
+/* Enhanced tooltip styles */
+.tooltip {
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.tooltip-inner {
+    background-color: #1f2937;
+    color: #f3f4f6;
+    max-width: 350px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.tooltip.bs-tooltip-top .tooltip-arrow::before {
+    border-top-color: #1f2937;
+}
+
+.tooltip.bs-tooltip-bottom .tooltip-arrow::before {
+    border-bottom-color: #1f2937;
+}
+
+/* Success tooltip */
+.server-card.connection-success[data-bs-title*="successful"] .tooltip-inner {
+    background-color: #10b981;
+    color: white;
+}
+
+/* Error tooltip */
+.server-card.connection-failed[data-bs-title*="failed"] .tooltip-inner {
+    background-color: #ef4444;
+    color: white;
+}
+
+/* Hover cursor pointer for elements with tooltips */
+[data-bs-toggle="tooltip"] {
+    cursor: help;
+}

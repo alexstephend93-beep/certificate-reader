@@ -142,6 +142,11 @@ if (searchInput) {
     searchInput.style.cursor = 'text';
 }
 
+function cleanDomainForDisplay(domain) {
+    if (!domain) return '';
+    return domain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+}
+
 function renderServers(hosts) {
     const grid = document.getElementById('serversGrid');
     if (!grid) return;
@@ -164,11 +169,12 @@ function renderServers(hosts) {
         const port = host.port || 22;
         const domainsHtml = host.domains && host.domains.length > 0 
             ? host.domains.map(d => {
-                const safeDomain = escapeHtml(d).replace(/'/g, "\\'");
+                const cleanDomain = cleanDomainForDisplay(d);
+                const safeDomain = escapeHtml(cleanDomain).replace(/'/g, "\\'");
                 return `
                 <div class="server-detail" style="flex-wrap: wrap;">
                     <i class="bi bi-globe2" title="Domain"></i>
-                    <span class="detail-value">https://${escapeHtml(d)}</span>
+                    <span class="detail-value">https://${escapeHtml(cleanDomain)}</span>
                     <i class="bi bi-copy icon-copy" title="Copy domain"
                        style="margin-left: 6px; cursor: pointer;"
                        onclick="event.stopPropagation(); copyToClipboard('https://${safeDomain}', 'https://${safeDomain} copied to clipboard')"></i>
@@ -178,7 +184,7 @@ function renderServers(hosts) {
                     <i class="bi bi-code-square icon-vscode" title="Open project in VS Code"
                        style="margin-left: 4px; cursor: pointer;"
                        onclick="event.stopPropagation(); openSpecificDomainInVSCode(this)" 
-                       data-domain="${d}"
+                       data-domain="${cleanDomain}"
                        data-host="${host.host}"
                        data-hostname="${host.hostname}"
                        data-user="${host.user}"
@@ -1368,6 +1374,23 @@ function testSingleConnection(element, index, hostname, port) {
         return;
     }
 
+    // Find the server card for highlighting
+    const serverCard = element.closest('.server-card');
+    const testWrapper = element.closest('.test-wrapper');
+    
+    // Remove any existing connection status classes
+    if (serverCard) {
+        serverCard.classList.remove('connection-success', 'connection-failed');
+        // Remove existing tooltip
+        serverCard.removeAttribute('data-bs-toggle');
+        serverCard.removeAttribute('data-bs-placement');
+        serverCard.removeAttribute('data-bs-title');
+        serverCard.removeAttribute('title');
+    }
+    if (testWrapper) {
+        testWrapper.classList.remove('test-success', 'test-failed');
+    }
+
     fetch('/ssh/test', {
         method: 'POST',
         headers: {
@@ -1390,8 +1413,109 @@ function testSingleConnection(element, index, hostname, port) {
 
         if (data.success) {
             showToast(`✅ ${hostData.host}: Connection successful!`, 'success');
+            // Add success classes
+            if (serverCard) {
+                serverCard.classList.add('connection-success');
+                // Add success tooltip with Bootstrap
+                serverCard.setAttribute('data-bs-toggle', 'tooltip');
+                serverCard.setAttribute('data-bs-placement', 'top');
+                serverCard.setAttribute('data-bs-title', `✅ Connection successful! Server ${hostData.host} is reachable.`);
+                serverCard.setAttribute('title', `✅ Connection successful! Server ${hostData.host} is reachable.`);
+                
+                // Initialize tooltip
+                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+                    new bootstrap.Tooltip(serverCard);
+                }
+                
+                // Add blink effect
+                serverCard.classList.add('blink-success');
+                setTimeout(() => {
+                    if (serverCard) serverCard.classList.remove('blink-success');
+                }, 1000);
+            }
+            if (testWrapper) {
+                testWrapper.classList.add('test-success');
+                // Add tooltip to test wrapper
+                testWrapper.setAttribute('data-bs-toggle', 'tooltip');
+                testWrapper.setAttribute('data-bs-placement', 'top');
+                testWrapper.setAttribute('data-bs-title', '✅ Connection successful');
+                testWrapper.setAttribute('title', '✅ Connection successful');
+                
+                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+                    new bootstrap.Tooltip(testWrapper);
+                }
+                
+                // Add blink effect for icon
+                icon.classList.add('blink-icon');
+                setTimeout(() => {
+                    icon.classList.remove('blink-icon');
+                }, 1000);
+            }
+            // Change icon color to green (permanent until next test)
+            icon.style.color = '#10b981';
+            icon.classList.add('connection-tested-success');
+            
+            // Add tooltip to icon
+            icon.setAttribute('data-bs-toggle', 'tooltip');
+            icon.setAttribute('data-bs-placement', 'top');
+            icon.setAttribute('data-bs-title', '✅ Connection successful');
+            icon.setAttribute('title', '✅ Connection successful');
+            
         } else {
-            showToast(`❌ ${hostData.host}: Connection failed - ${data.message}`, 'danger');
+            const errorMessage = data.message || 'Connection failed';
+            showToast(`❌ ${hostData.host}: Connection failed - ${errorMessage}`, 'danger');
+            // Add failed classes
+            if (serverCard) {
+                serverCard.classList.add('connection-failed');
+                // Add error tooltip with Bootstrap showing the actual error
+                serverCard.setAttribute('data-bs-toggle', 'tooltip');
+                serverCard.setAttribute('data-bs-placement', 'top');
+                serverCard.setAttribute('data-bs-title', `❌ Connection failed: ${errorMessage}`);
+                serverCard.setAttribute('title', `❌ Connection failed: ${errorMessage}`);
+                
+                // Initialize tooltip
+                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+                    new bootstrap.Tooltip(serverCard);
+                }
+                
+                // Add blink effect
+                serverCard.classList.add('blink-failed');
+                setTimeout(() => {
+                    if (serverCard) serverCard.classList.remove('blink-failed');
+                }, 1000);
+            }
+            if (testWrapper) {
+                testWrapper.classList.add('test-failed');
+                // Add tooltip to test wrapper with error
+                testWrapper.setAttribute('data-bs-toggle', 'tooltip');
+                testWrapper.setAttribute('data-bs-placement', 'top');
+                testWrapper.setAttribute('data-bs-title', `❌ ${errorMessage}`);
+                testWrapper.setAttribute('title', `❌ ${errorMessage}`);
+                
+                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+                    new bootstrap.Tooltip(testWrapper);
+                }
+                
+                // Add blink effect for icon
+                icon.classList.add('blink-icon');
+                setTimeout(() => {
+                    icon.classList.remove('blink-icon');
+                }, 1000);
+            }
+            // Change icon color to red (permanent until next test)
+            icon.style.color = '#ef4444';
+            icon.classList.add('connection-tested-failed');
+            
+            // Add tooltip to icon with error
+            icon.setAttribute('data-bs-toggle', 'tooltip');
+            icon.setAttribute('data-bs-placement', 'top');
+            icon.setAttribute('data-bs-title', `❌ ${errorMessage}`);
+            icon.setAttribute('title', `❌ ${errorMessage}`);
+        }
+        
+        // Initialize tooltips for the icon if bootstrap is available
+        if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+            new bootstrap.Tooltip(icon);
         }
     })
     .catch(error => {
@@ -1399,7 +1523,59 @@ function testSingleConnection(element, index, hostname, port) {
         icon.style.display = 'inline-block';
         spinner.style.display = 'none';
 
+        const errorMessage = error.message || 'Network error';
         showToast(`❌ ${hostData.host}: Connection test failed`, 'danger');
+        // Add failed classes
+        if (serverCard) {
+            serverCard.classList.add('connection-failed');
+            // Add error tooltip
+            serverCard.setAttribute('data-bs-toggle', 'tooltip');
+            serverCard.setAttribute('data-bs-placement', 'top');
+            serverCard.setAttribute('data-bs-title', `❌ Connection test failed: ${errorMessage}`);
+            serverCard.setAttribute('title', `❌ Connection test failed: ${errorMessage}`);
+            
+            if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+                new bootstrap.Tooltip(serverCard);
+            }
+            
+            // Add blink effect
+            serverCard.classList.add('blink-failed');
+            setTimeout(() => {
+                if (serverCard) serverCard.classList.remove('blink-failed');
+            }, 1000);
+        }
+        if (testWrapper) {
+            testWrapper.classList.add('test-failed');
+            // Add tooltip to test wrapper
+            testWrapper.setAttribute('data-bs-toggle', 'tooltip');
+            testWrapper.setAttribute('data-bs-placement', 'top');
+            testWrapper.setAttribute('data-bs-title', `❌ ${errorMessage}`);
+            testWrapper.setAttribute('title', `❌ ${errorMessage}`);
+            
+            if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+                new bootstrap.Tooltip(testWrapper);
+            }
+            
+            // Add blink effect for icon
+            icon.classList.add('blink-icon');
+            setTimeout(() => {
+                icon.classList.remove('blink-icon');
+            }, 1000);
+        }
+        // Change icon color to red (permanent until next test)
+        icon.style.color = '#ef4444';
+        icon.classList.add('connection-tested-failed');
+        
+        // Add tooltip to icon
+        icon.setAttribute('data-bs-toggle', 'tooltip');
+        icon.setAttribute('data-bs-placement', 'top');
+        icon.setAttribute('data-bs-title', `❌ ${errorMessage}`);
+        icon.setAttribute('title', `❌ ${errorMessage}`);
+        
+        if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+            new bootstrap.Tooltip(icon);
+        }
+        
         console.error('Error:', error);
     });
 }
