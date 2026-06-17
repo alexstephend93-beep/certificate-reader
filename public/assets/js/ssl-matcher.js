@@ -7,6 +7,8 @@
   window.clearAll = clearAll;
   window.copyResults = copyResults;
   window.copyToClipboard = window.copyToClipboard || copyToClipboard;
+  window.decryptKey = decryptKey;
+  window.clearDecryptPanel = clearDecryptPanel;
 
   // Tab switching
   function initTabs() {
@@ -332,6 +334,87 @@
     }
   }
 
+  async function decryptKey() {
+    const privateKey = document.getElementById('decryptKeyContent').value;
+    const keyPassword = document.getElementById('decryptKeyPassword').value;
+
+    if (!privateKey) return showToast('Please provide encrypted private key content or upload file', 'error');
+    if (!keyPassword) return showToast('Please provide the password', 'error');
+
+    showLoading(true);
+    try {
+      const data = await postJson('/ssl-matcher/decrypt-key', {
+        private_key: privateKey,
+        key_password: keyPassword
+      });
+
+      if (data.success) {
+        displayDecryptResults(data);
+        showToast(data.message || 'Key decrypted', 'success');
+      } else {
+        showToast(data.message || 'Failed to decrypt key', 'error');
+      }
+    } catch (e) {
+      console.error(e);
+      showToast('An error occurred', 'error');
+    } finally {
+      showLoading(false);
+    }
+  }
+
+  function displayDecryptResults(data) {
+    const resultsSection = document.getElementById('resultsSection');
+    const matchBadge = document.getElementById('matchBadge');
+    const matchMessage = document.getElementById('matchMessage');
+    const matchDetails = document.getElementById('matchDetails');
+
+    if (!resultsSection || !matchBadge || !matchMessage || !matchDetails) return;
+
+    matchBadge.className = 'match-badge match-success';
+    matchBadge.innerHTML = '<i class="bi bi-unlock-fill me-2"></i> DECRYPTED';
+
+    matchMessage.innerHTML = data.message || 'Private key has been decrypted successfully.';
+
+    const decryptBlock = document.createElement('div');
+    decryptBlock.className = 'detail-card';
+    decryptBlock.innerHTML = `
+      <h4><i class="bi bi-key-fill"></i> Decrypted Private Key</h4>
+      <p class="mb-2 text-muted">Copy the decrypted key below:</p>
+      <textarea id="decryptedKeyOutput" rows="10" class="form-control font-monospace" style="font-size:0.8rem;">${escapeHtml(data.decrypted_key)}</textarea>
+      <div class="text-center mt-3">
+        <button class="btn btn-outline-primary btn-sm" onclick="copyDecryptedKey()">
+          <i class="bi bi-clipboard me-2"></i> Copy Decrypted Key
+        </button>
+      </div>
+    `;
+
+    matchDetails.innerHTML = '';
+    matchDetails.appendChild(decryptBlock);
+
+    resultsSection.style.display = 'block';
+    resultsSection.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function copyDecryptedKey() {
+    const output = document.getElementById('decryptedKeyOutput');
+    if (output) {
+      output.select();
+      navigator.clipboard.writeText(output.value).then(() => showToast('Decrypted key copied!', 'success'));
+    }
+  }
+
+  function clearDecryptPanel() {
+    const elFile = document.getElementById('decryptKeyFile');
+    const elText = document.getElementById('decryptKeyContent');
+    const elPass = document.getElementById('decryptKeyPassword');
+    if (elFile) elFile.value = '';
+    if (elText) elText.value = '';
+    if (elPass) elPass.value = '';
+
+    const resultsSection = document.getElementById('resultsSection');
+    if (resultsSection) resultsSection.style.display = 'none';
+  }
+
   function clearAll() {
     const textareas = ['certContent', 'keyContent', 'certContent2', 'pubContent', 'cert1Content', 'cert2Content', 'pubContent2', 'keyContent2'];
     textareas.forEach(id => {
@@ -369,6 +452,9 @@
     // New panel (public key + private key)
     setupFileHandler('pubFile2', 'pubContent2');
     setupFileHandler('keyFile2', 'keyContent2');
+
+    // Decrypt panel
+    setupFileHandler('decryptKeyFile', 'decryptKeyContent');
   });
 })();
 

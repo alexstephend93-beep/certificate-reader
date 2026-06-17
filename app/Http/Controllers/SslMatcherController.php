@@ -574,8 +574,8 @@ class SslMatcherController extends Controller
     }
 
     /**
-     * Get command examples
-     */
+      * Get command examples
+      */
     public function getCommands()
     {
 
@@ -614,5 +614,418 @@ class SslMatcherController extends Controller
                 ]
             ]
         ]);
+    }
+
+    /**
+     * Decrypt Encrypted Private Key
+     */
+    public function decryptKey(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'private_key' => 'required_without:key_file|string',
+            'key_file' => 'required_without:private_key|file|mimes:key,pem|max:512',
+            'key_password' => 'required|string'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['success' => false, 'errors' => $validator->errors()], 422);
+        }
+
+        try {
+            $keyContent = $request->input('private_key');
+            if ($request->hasFile('key_file')) {
+                $keyContent = file_get_contents($request->file('key_file')->getPathname());
+            }
+
+            $keyPassword = $request->input('key_password');
+
+            if (empty($keyContent)) {
+                return response()->json(['success' => false, 'message' => 'Private key content is empty'], 400);
+            }
+
+            $keyContent = trim($keyContent);
+
+            $tempFile = tempnam(sys_get_temp_dir(), 'decrypt_');
+            file_put_contents($tempFile, $keyContent);
+
+            $decryptedFile = $tempFile . '_decrypted.pem';
+
+            $output = shell_exec("openssl rsa -in " . escapeshellarg($tempFile) . " -passin pass:" . escapeshellarg($keyPassword) . " -out " . escapeshellarg($decryptedFile) . " 2>&1");
+
+            unlink($tempFile);
+
+            if (!file_exists($decryptedFile) || filesize($decryptedFile) === 0) {
+                if (file_exists($decryptedFile)) unlink($decryptedFile);
+                $cleanOutput = trim($output);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Decryption failed. Please check your password.',
+                    'openssl_output' => $cleanOutput
+                ], 400);
+            }
+
+            $decryptedContent = file_get_contents($decryptedFile);
+            unlink($decryptedFile);
+
+            return response()->json([
+                'success' => true,
+                'message' => '✅ Private key decrypted successfully!',
+                'decrypted_key' => $decryptedContent
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Private key decryption error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Validate and parse CSR details
+     */
+    public function validateCSR(Request $request)
+    {
+        $request->validate([
+            'csr' => 'required|string'
+        ]);
+
+        $csr = $request->input('csr');
+        
+        try {
+            // Save CSR to temporary file
+            $tempCsrFile = tempnam(sys_get_temp_dir(), 'csr_');
+            file_put_contents($tempCsrFile, $csr);
+            
+            // Extract CSR details using openssl
+            $cmd = "openssl req -text -noout -in " . escapeshellarg($tempCsrFile) . " 2>&1";
+            $output = shell_exec($cmd);
+            
+            if (empty($output)) {
+                unlink($tempCsrFile);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to parse CSR. Invalid CSR format.'
+                ]);
+            }
+            
+            // Extract subject
+            preg_match('/Subject:\s*(.+)/', $output, $subjectMatch);
+            $subject = $subjectMatch[1] ?? 'N/A';
+            
+            // Extract public key algorithm
+            preg_match('/Public Key Algorithm:\s*(.+)/', $output, $algoMatch);
+            $publicKeyAlgorithm = $algoMatch[1] ?? 'N/A';
+            
+            // Extract key size
+            preg_match('/RSA Public Key:\s*\((\d+)\s+bit\)/', $output, $keySizeMatch);
+            $keySize = $keySizeMatch[1] ?? 'N/A';
+            
+            if ($keySize == 'N/A') {
+                preg_match('/Public-Key:\s*\((\d+)\s+bit\)/', $output, $keySizeMatch2);
+                $keySize = $keySizeMatch2[1] ?? 'N/A';
+            }
+            
+            // Extract signature algorithm
+            preg_match('/Signature Algorithm:\s*(.+)/', $output, $sigMatch);
+            $signatureAlgorithm = $sigMatch[1] ?? 'N/A';
+            
+            // Extract version
+            preg_match('/Version:\s*(\d+)/', $output, $versionMatch);
+            $version = $versionMatch[1] ?? 'N/A';
+            
+            // Get MD5 fingerprint
+            $md5Cmd = "openssl req -noout -modulus -in " . escapeshellarg($tempCsrFile) . " | openssl md5 2>&1";
+            $md5Fingerprint = trim(shell_exec($md5Cmd));
+            
+            // Get SHA256 fingerprint
+            $sha256Cmd = "openssl req -noout -modulus -in " . escapeshellarg($tempCsrFile) . " | openssl sha256 2>&1";
+            $sha256Fingerprint = trim(shell_exec($sha256Cmd));
+            
+            // Extract SANs (Subject Alternative Names)
+            preg_match_all('/DNS:([^,\s]+)/', $output, $sanMatches);
+            $sanList = $sanMatches[1] ?? [];
+            
+            // Also check for DNS entries in the subjectAltName section
+            if (empty($sanList)) {
+                preg_match('/X509v3 Subject Alternative Name:\s+(.+)/', $output, $sanSection);
+                if (!empty($sanSection[1])) {
+                    preg_match_all('/DNS:([^,\s]+)/', $sanSection[1], $sanMatches2);
+                    $sanList = $sanMatches2[1] ?? [];
+                }
+            }
+            
+            unlink($tempCsrFile);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'CSR validated successfully',
+                'match' => true,
+                'csr' => [
+                    'subject' => $subject,
+                    'public_key_algorithm' => $publicKeyAlgorithm,
+                    'key_size' => $keySize,
+                    'signature_algorithm' => $signatureAlgorithm,
+                    'version' => $version,
+                    'fingerprint_md5' => $md5Fingerprint,
+                    'fingerprint_sha256' => $sha256Fingerprint,
+                    'san_list' => $sanList
+                ]
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error processing CSR: ' . $e->getMessage()
+            ]);
+        }
+    }
+    
+    /**
+     * Match CSR with Private Key
+     */
+    public function matchCSRWithKey(Request $request)
+    {
+        $request->validate([
+            'csr' => 'required|string',
+            'private_key' => 'required|string',
+            'key_password' => 'nullable|string'
+        ]);
+        
+        $csr = $request->input('csr');
+        $privateKey = $request->input('private_key');
+        $keyPassword = $request->input('key_password');
+        
+        try {
+            // Save files to temp locations
+            $tempCsrFile = tempnam(sys_get_temp_dir(), 'csr_');
+            $tempKeyFile = tempnam(sys_get_temp_dir(), 'key_');
+            
+            file_put_contents($tempCsrFile, $csr);
+            file_put_contents($tempKeyFile, $privateKey);
+            
+            // Get CSR modulus
+            $csrModulusCmd = "openssl req -noout -modulus -in " . escapeshellarg($tempCsrFile) . " 2>&1";
+            $csrModulus = trim(shell_exec($csrModulusCmd));
+            $csrModulusHash = shell_exec("echo " . escapeshellarg($csrModulus) . " | openssl md5 2>&1");
+            
+            // Get private key modulus
+            $keyCmd = $keyPassword 
+                ? "openssl rsa -noout -modulus -in " . escapeshellarg($tempKeyFile) . " -passin pass:" . escapeshellarg($keyPassword) . " 2>&1"
+                : "openssl rsa -noout -modulus -in " . escapeshellarg($tempKeyFile) . " 2>&1";
+            
+            $keyModulus = trim(shell_exec($keyCmd));
+            
+            if (strpos($keyModulus, 'unable to load Private Key') !== false || 
+                strpos($keyModulus, 'bad decrypt') !== false ||
+                strpos($keyModulus, 'No such file') !== false) {
+                unlink($tempCsrFile);
+                unlink($tempKeyFile);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid private key or wrong password'
+                ]);
+            }
+            
+            $keyModulusHash = shell_exec("echo " . escapeshellarg($keyModulus) . " | openssl md5 2>&1");
+            
+            $match = (trim($csrModulusHash) === trim($keyModulusHash));
+            
+            // Also parse CSR details for display
+            $csrDetailsCmd = "openssl req -text -noout -in " . escapeshellarg($tempCsrFile) . " 2>&1";
+            $csrOutput = shell_exec($csrDetailsCmd);
+            
+            preg_match('/Subject:\s*(.+)/', $csrOutput, $subjectMatch);
+            $subject = $subjectMatch[1] ?? 'N/A';
+            
+            preg_match('/Public Key Algorithm:\s*(.+)/', $csrOutput, $algoMatch);
+            $publicKeyAlgorithm = $algoMatch[1] ?? 'N/A';
+            
+            preg_match('/RSA Public Key:\s*\((\d+)\s+bit\)/', $csrOutput, $keySizeMatch);
+            $keySize = $keySizeMatch[1] ?? 'N/A';
+            
+            if ($keySize == 'N/A') {
+                preg_match('/Public-Key:\s*\((\d+)\s+bit\)/', $csrOutput, $keySizeMatch2);
+                $keySize = $keySizeMatch2[1] ?? 'N/A';
+            }
+            
+            preg_match('/Signature Algorithm:\s*(.+)/', $csrOutput, $sigMatch);
+            $signatureAlgorithm = $sigMatch[1] ?? 'N/A';
+            
+            // Get MD5 fingerprint of CSR modulus
+            $md5Fingerprint = trim($csrModulusHash);
+            $sha256Fingerprint = shell_exec("echo " . escapeshellarg($csrModulus) . " | openssl sha256 2>&1");
+            
+            unlink($tempCsrFile);
+            unlink($tempKeyFile);
+            
+            return response()->json([
+                'success' => true,
+                'match' => $match,
+                'message' => $match ? 'CSR matches the private key!' : 'CSR does NOT match the private key!',
+                'csr' => [
+                    'subject' => $subject,
+                    'public_key_algorithm' => $publicKeyAlgorithm,
+                    'key_size' => $keySize,
+                    'signature_algorithm' => $signatureAlgorithm,
+                    'fingerprint_md5' => trim($md5Fingerprint),
+                    'fingerprint_sha256' => trim($sha256Fingerprint)
+                ],
+                'cert_modulus_hash' => trim($csrModulusHash),
+                'key_modulus_hash' => trim($keyModulusHash)
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error matching CSR with key: ' . $e->getMessage()
+            ]);
+        }
+    }
+    
+    /**
+     * Convert certificate/key formats
+     */
+    public function convertFormat(Request $request)
+    {
+        $request->validate([
+            'input_type' => 'required|in:certificate,private_key,public_key',
+            'input_format' => 'required|in:pem,der,pkcs7,pkcs12',
+            'output_format' => 'required|in:pem,der,pkcs7,pkcs12',
+            'content' => 'required|string',
+            'password' => 'nullable|string',
+            'server_format' => 'nullable|string'
+        ]);
+        
+        $inputType = $request->input('input_type');
+        $inputFormat = $request->input('input_format');
+        $outputFormat = $request->input('output_format');
+        $content = $request->input('content');
+        $password = $request->input('password');
+        $serverFormat = $request->input('server_format');
+        
+        try {
+            // Create temp files for conversion
+            $tempInputFile = tempnam(sys_get_temp_dir(), 'convert_in_');
+            $tempOutputFile = tempnam(sys_get_temp_dir(), 'convert_out_');
+            
+            file_put_contents($tempInputFile, $content);
+            
+            $convertedContent = '';
+            $cmd = '';
+            
+            // Determine the appropriate OpenSSL command based on conversion type
+            if ($inputType === 'certificate') {
+                $convertedContent = $this->convertCertificate($inputFormat, $outputFormat, $tempInputFile, $tempOutputFile, $password);
+            } elseif ($inputType === 'private_key') {
+                $convertedContent = $this->convertPrivateKey($inputFormat, $outputFormat, $tempInputFile, $tempOutputFile, $password);
+            } elseif ($inputType === 'public_key') {
+                $convertedContent = $this->convertPublicKey($inputFormat, $outputFormat, $tempInputFile, $tempOutputFile);
+            }
+            
+            // Apply server-specific formatting if requested
+            if ($serverFormat && $serverFormat !== '') {
+                $convertedContent = $this->applyServerFormatting($convertedContent, $serverFormat, $inputType);
+            }
+            
+            unlink($tempInputFile);
+            if (file_exists($tempOutputFile)) unlink($tempOutputFile);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Conversion successful',
+                'converted_content' => $convertedContent
+            ]);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Conversion failed: ' . $e->getMessage()
+            ]);
+        }
+    }
+    
+    private function convertCertificate($inputFormat, $outputFormat, $inputFile, $outputFile, $password)
+    {
+        $convertedContent = '';
+        
+        if ($inputFormat === 'pem' && $outputFormat === 'der') {
+            $cmd = "openssl x509 -in " . escapeshellarg($inputFile) . " -outform DER -out " . escapeshellarg($outputFile) . " 2>&1";
+            shell_exec($cmd);
+            if (file_exists($outputFile)) {
+                $convertedContent = "-----BEGIN CERTIFICATE-----\n" . chunk_split(base64_encode(file_get_contents($outputFile)), 64, "\n") . "-----END CERTIFICATE-----\n";
+            }
+        } 
+        elseif ($inputFormat === 'der' && $outputFormat === 'pem') {
+            $cmd = "openssl x509 -inform DER -in " . escapeshellarg($inputFile) . " -outform PEM -out " . escapeshellarg($outputFile) . " 2>&1";
+            shell_exec($cmd);
+            if (file_exists($outputFile)) {
+                $convertedContent = file_get_contents($outputFile);
+            }
+        }
+        elseif ($inputFormat === 'pem' && $outputFormat === 'pkcs7') {
+            $cmd = "openssl crl2pkcs7 -nocrl -certfile " . escapeshellarg($inputFile) . " -out " . escapeshellarg($outputFile) . " 2>&1";
+            shell_exec($cmd);
+            if (file_exists($outputFile)) {
+                $convertedContent = file_get_contents($outputFile);
+            }
+        }
+        elseif ($inputFormat === 'pkcs7' && $outputFormat === 'pem') {
+            $cmd = "openssl pkcs7 -in " . escapeshellarg($inputFile) . " -print_certs -out " . escapeshellarg($outputFile) . " 2>&1";
+            shell_exec($cmd);
+            if (file_exists($outputFile)) {
+                $convertedContent = file_get_contents($outputFile);
+            }
+        }
+        else {
+            // Default: just return original content
+            $convertedContent = file_get_contents($inputFile);
+        }
+        
+        return $convertedContent ?: "Conversion not supported for this format combination";
+    }
+    
+    private function convertPrivateKey($inputFormat, $outputFormat, $inputFile, $outputFile, $password)
+    {
+        $convertedContent = '';
+        $passin = $password ? "-passin pass:" . escapeshellarg($password) : "";
+        $passout = $outputFormat === 'pkcs12' ? "-passout pass:" . ($password ?: "") : "";
+        
+        if ($inputFormat === 'pem' && $outputFormat === 'der') {
+            $cmd = "openssl rsa -in " . escapeshellarg($inputFile) . " $passin -outform DER -out " . escapeshellarg($outputFile) . " 2>&1";
+            shell_exec($cmd);
+            if (file_exists($outputFile)) {
+                $convertedContent = "-----BEGIN PRIVATE KEY-----\n" . chunk_split(base64_encode(file_get_contents($outputFile)), 64, "\n") . "-----END PRIVATE KEY-----\n";
+            }
+        }
+        elseif ($inputFormat === 'der' && $outputFormat === 'pem') {
+            $cmd = "openssl rsa -inform DER -in " . escapeshellarg($inputFile) . " $passin -outform PEM -out " . escapeshellarg($outputFile) . " 2>&1";
+            shell_exec($cmd);
+            if (file_exists($outputFile)) {
+                $convertedContent = file_get_contents($outputFile);
+            }
+        }
+        else {
+            $convertedContent = file_get_contents($inputFile);
+        }
+        
+        return $convertedContent ?: "Conversion not supported for this format combination";
+    }
+    
+    private function convertPublicKey($inputFormat, $outputFormat, $inputFile, $outputFile)
+    {
+        $convertedContent = file_get_contents($inputFile);
+        return $convertedContent;
+    }
+    
+    private function applyServerFormatting($content, $serverFormat, $inputType)
+    {
+        if ($serverFormat === 'apache' && $inputType === 'certificate') {
+            return "# Apache Configuration\n# Add to your SSL VirtualHost:\n# SSLCertificateFile /path/to/this.crt\n\n" . $content;
+        } elseif ($serverFormat === 'nginx') {
+            return "# Nginx Configuration\n# Add to your server block:\n# ssl_certificate /path/to/this.crt;\n\n" . $content;
+        } elseif ($serverFormat === 'iis') {
+            return "# IIS Format\n# Import this certificate using IIS Manager\n# File format: .pfx or .p7b\n\n" . $content;
+        }
+        
+        return $content;
     }
 }

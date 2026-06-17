@@ -219,4 +219,9 @@ Route::prefix('ssl-matcher')->name('ssl-matcher.')->group(function () {
     Route::post('/match-certs', [SslMatcherController::class, 'matchCerts'])->name('match.certs');
     Route::post('/match-pub-priv', [SslMatcherController::class, 'matchPublicKeyPrivateKey'])->name('match.pub.priv');
     Route::get('/commands', [SslMatcherController::class, 'getCommands'])->name('commands');
+    Route::post('/decrypt-key', [SslMatcherController::class, 'decryptKey'])->name('decrypt.key');
+    Route::post('/validate-csr', [SSLMatcherController::class, 'validateCSR']);
+    Route::post('/match-csr-key', [SSLMatcherController::class, 'matchCSRWithKey']);
+    Route::post('/convert-format', [SSLMatcherController::class, 'convertFormat']);
+
 });
