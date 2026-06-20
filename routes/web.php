@@ -225,3 +225,19 @@ Route::prefix('ssl-matcher')->name('ssl-matcher.')->group(function () {
     Route::post('/convert-format', [SSLMatcherController::class, 'convertFormat']);
 
 });
+
+
+use App\Http\Controllers\SystemMonitorController;
+
+// System Monitor Routes
+Route::prefix('system-monitor')->group(function () {
+    Route::get('/', [SystemMonitorController::class, 'index'])->name('system-monitor.index');
+    Route::get('/data', [SystemMonitorController::class, 'getData'])->name('system-monitor.data');
+    Route::post('/kill-process', [SystemMonitorController::class, 'killProcess'])->name('system-monitor.kill-process');
+    Route::post('/kill-multiple', [SystemMonitorController::class, 'killMultipleProcesses'])->name('system-monitor.kill-multiple');
+    Route::post('/kill-application', [SystemMonitorController::class, 'killApplication'])->name('system-monitor.kill-application');
+    Route::post('/clear-low-priority', [SystemMonitorController::class, 'clearLowPriority'])->name('system-monitor.clear-low-priority');
+    Route::post('/free-memory', [SystemMonitorController::class, 'freeMemory'])->name('system-monitor.free-memory');
+    Route::post('/kill-low-priority-only', [SystemMonitorController::class, 'killLowPriorityOnly']);
+    Route::post('/clear-chrome-low-priority', [SystemMonitorController::class, 'clearChromeLowPriority']);
+});

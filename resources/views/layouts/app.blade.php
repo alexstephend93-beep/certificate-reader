@@ -346,6 +346,10 @@
                     <i class="bi bi-grid-1x2-fill"></i>
                     <span>Dashboard</span>
                 </a>
+                <a href="{{ url('/system-monitor') }}" class="nav-link {{ request()->is('system-monitor*') ? 'active' : '' }}">
+                    <i class="bi bi-cpu-fill"></i>
+                    <span>System Monitor</span>
+                </a>
             </div>
             
             <!-- Security Tools Section -->
@@ -478,5 +482,39 @@
     </script>
     @yield('scripts')
     @include('components.ai-chat-widget')
+
+    <!-- Electron Event Fix -->
+    @if(env('APP_ENV') !== 'production')
+    <script>
+        // Fix for Electron click events
+        document.addEventListener('DOMContentLoaded', function() {
+            // Fix for all click events
+            document.addEventListener('click', function(e) {
+                // Allow all click events to propagate
+                console.log('Click event allowed in Electron');
+                
+                // If it's a button or link, ensure it works
+                if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A') {
+                    e.target.click();
+                }
+            }, true);
+            
+            // Fix for form submissions
+            document.addEventListener('submit', function(e) {
+                console.log('Form submission allowed in Electron');
+                // Allow form to submit normally
+            }, true);
+            
+            // Fix for Laravel Livewire/Alpine.js if used
+            if (typeof Livewire !== 'undefined') {
+                Livewire.on('click', function() {
+                    console.log('Livewire click event');
+                });
+            }
+            
+            console.log('✅ Electron event fixes applied');
+        });
+    </script>
+    @endif
 </body>
 </html>

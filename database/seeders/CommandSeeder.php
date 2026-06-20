@@ -1893,6 +1893,78 @@ class CommandSeeder extends Seeder
                 'os' => 'all',
                 'danger_level' => 'medium',
                 'icon' => 'unlock'
+            ],
+            [
+                'name' => 'Check Top Memory Consuming Processes',
+                'category' => 'system',
+                'sub_category' => 'monitoring',
+                'command' => 'ps aux --sort=-%mem | head -11',
+                'description' => 'Shows top 10 processes consuming the most memory on the system, sorted by memory usage (highest to lowest).',
+                'alternate_commands' => json_encode([
+                    'ps aux --sort=-%mem | head -20',
+                    'ps aux --sort=-%cpu | head -11',
+                    'top -o %MEM -b -n 1 | head -17',
+                    'htop'
+                ]),
+                'example_usage' => 'ps aux --sort=-%mem | head -11',
+                'notes' => 'The first line is the header, followed by the top 10 memory-consuming processes.',
+                'tags' => 'memory,process,top,monitoring,ps',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'memory'
+            ],
+            [
+                'name' => 'Check Top CPU Consuming Processes',
+                'category' => 'system',
+                'sub_category' => 'monitoring',
+                'command' => 'ps aux --sort=-%cpu | head -11',
+                'description' => 'Shows top 10 processes consuming the most CPU on the system, sorted by CPU usage (highest to lowest).',
+                'alternate_commands' => json_encode([
+                    'ps aux --sort=-%cpu | head -20',
+                    'top -o %CPU -b -n 1 | head -17'
+                ]),
+                'example_usage' => 'ps aux --sort=-%cpu | head -11',
+                'notes' => 'Useful for identifying CPU-intensive processes.',
+                'tags' => 'cpu,process,top,monitoring,ps',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'cpu'
+            ],
+            [
+                'name' => 'Check Memory Usage Summary',
+                'category' => 'system',
+                'sub_category' => 'monitoring',
+                'command' => 'free -h && echo "---" && vmstat -s | head -10',
+                'description' => 'Shows memory usage summary including total, used, free, and swap memory.',
+                'alternate_commands' => json_encode([
+                    'free -m',
+                    'cat /proc/meminfo',
+                    'top -b -n 1 | grep "MiB Mem"'
+                ]),
+                'example_usage' => 'free -h',
+                'notes' => 'Use -h for human-readable format (GB/MB).',
+                'tags' => 'memory,free,vmstat,monitoring',
+                'os' => 'linux',
+                'danger_level' => 'low',
+                'icon' => 'hdd-stack'
+            ],
+            [
+                'name' => 'Monitor Real-time Memory Usage',
+                'category' => 'system',
+                'sub_category' => 'monitoring',
+                'command' => 'watch -n 2 "ps aux --sort=-%mem | head -11"',
+                'description' => 'Real-time monitoring of top memory-consuming processes, updating every 2 seconds.',
+                'alternate_commands' => json_encode([
+                    'watch -n 1 "ps aux --sort=-%mem | head -15"',
+                    'top -o %MEM',
+                    'htop'
+                ]),
+                'example_usage' => 'watch -n 2 "ps aux --sort=-%mem | head -11"',
+                'notes' => 'Press Ctrl+C to exit watch mode.',
+                'tags' => 'memory,monitoring,realtime,watch,ps',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'activity'
             ]
         ];
 
