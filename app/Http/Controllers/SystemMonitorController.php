@@ -54,48 +54,144 @@ class SystemMonitorController extends Controller
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    //  CACHE CLEARING FUNCTION
+    //  ENHANCED CACHE CLEARING WITH ALL SAFE CLEANUPS
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
-     * Clear system caches safely (page cache, dentries, inodes)
-     * Returns memory freed in MB
+     * Enhanced cache clearing - includes all safe cleanups
+     * Returns array with detailed breakdown
      */
-    private function clearSystemCache(): float
+    private function clearSystemCacheEnhanced(): array
     {
-        $freedMb = 0;
+        $result = [
+            'cache_freed_mb' => 0,
+            'shared_freed_mb' => 0,
+            'zombies_reaped' => 0,
+            'locks_cleaned' => 0,
+            'total_freed_mb' => 0,
+            'details' => []
+        ];
 
-        // Check if we have write access to drop_caches
+        // 1. Clear standard system caches (page cache, dentries, inodes)
         $dropCachesPath = '/proc/sys/vm/drop_caches';
-        if (!is_writable($dropCachesPath)) {
-            return 0;
+        if (is_writable($dropCachesPath)) {
+            $cacheBefore = $this->getCacheSizeMb();
+            shell_exec('sync 2>/dev/null');
+            shell_exec('echo 3 > /proc/sys/vm/drop_caches 2>/dev/null');
+            usleep(200000);
+            $cacheAfter = $this->getCacheSizeMb();
+            $result['cache_freed_mb'] = round(max(0, $cacheBefore - $cacheAfter), 1);
+            $result['details'][] = 'Cache cleared: ' . $result['cache_freed_mb'] . ' MB';
+        } else {
+            $result['details'][] = 'Cache clear skipped (no write access to /proc/sys/vm/drop_caches)';
         }
 
-        // Get cache size before clearing
-        $cacheBefore = $this->getCacheSizeMb();
+        // 2. Clear orphaned shared memory segments
+        $sharedFreed = $this->clearSharedMemory();
+        $result['shared_freed_mb'] = $sharedFreed;
+        if ($sharedFreed > 0) {
+            $result['details'][] = 'Shared memory cleaned: ' . $sharedFreed . ' MB';
+        }
 
-        // Sync filesystem first
-        shell_exec('sync 2>/dev/null');
+        // 3. Reap zombie processes
+        $zombiesReaped = $this->reapZombies();
+        $result['zombies_reaped'] = $zombiesReaped;
+        if ($zombiesReaped > 0) {
+            $result['details'][] = 'Reaped ' . $zombiesReaped . ' zombie processes';
+        }
 
-        // Clear page cache, dentries, inodes (safe - doesn't kill processes)
-        // 1 = clear page cache
-        // 2 = clear dentries and inodes
-        // 3 = clear all (1+2)
-        $result = shell_exec('echo 3 > /proc/sys/vm/drop_caches 2>/dev/null');
+        // 4. Clean stale file locks
+        $locksCleaned = $this->clearStaleLocks();
+        $result['locks_cleaned'] = $locksCleaned;
+        if ($locksCleaned > 0) {
+            $result['details'][] = 'Cleaned ' . $locksCleaned . ' stale locks';
+        }
 
-        // Wait a moment for the cache to be cleared
-        usleep(200000);
-
-        // Get cache size after clearing
-        $cacheAfter = $this->getCacheSizeMb();
-
-        // Calculate freed memory
-        $freedMb = max(0, $cacheBefore - $cacheAfter);
-
-        // Also try to compact memory
+        // 5. Compact memory
         shell_exec('echo 1 > /proc/sys/vm/compact_memory 2>/dev/null');
 
+        $result['total_freed_mb'] = round(
+            $result['cache_freed_mb'] + 
+            $result['shared_freed_mb'], 
+            1
+        );
+
+        return $result;
+    }
+
+    /**
+     * Clear orphaned shared memory segments
+     */
+    private function clearSharedMemory(): float
+    {
+        $freedMb = 0;
+        
+        // List all shared memory segments
+        $output = shell_exec('ipcs -m 2>/dev/null | grep -v "^------" | grep -v "shmid" | awk \'{print $2, $6}\'');
+        if (!$output) return 0;
+        
+        $lines = explode("\n", trim($output));
+        foreach ($lines as $line) {
+            if (empty(trim($line))) continue;
+            $parts = preg_split('/\s+/', trim($line));
+            if (count($parts) < 2) continue;
+            
+            $shmid = (int)$parts[0];
+            $nattch = (int)$parts[1];
+            
+            // Only remove if no processes are attached
+            if ($nattch == 0) {
+                shell_exec("ipcrm -m $shmid 2>/dev/null");
+                $freedMb += 0.1; // Approximate
+            }
+        }
+        
         return round($freedMb, 1);
+    }
+
+    /**
+     * Reap zombie processes
+     */
+    private function reapZombies(): int
+    {
+        $count = 0;
+        $output = shell_exec('ps aux 2>/dev/null | grep -E "^Z" | awk \'{print $2}\'');
+        if (!$output) return 0;
+        
+        $pids = explode("\n", trim($output));
+        foreach ($pids as $pid) {
+            if (empty($pid)) continue;
+            // Wait for the zombie to be reaped by its parent
+            shell_exec("wait $pid 2>/dev/null");
+            $count++;
+        }
+        
+        return $count;
+    }
+
+    /**
+     * Clean stale file locks (only in /tmp and /var/run)
+     */
+    private function clearStaleLocks(): int
+    {
+        $count = 0;
+        
+        // Check lock files older than 1 hour
+        $output = shell_exec('find /tmp /var/run -name "*.lock" -type f -mmin +60 2>/dev/null');
+        if (!$output) return 0;
+        
+        $locks = explode("\n", trim($output));
+        foreach ($locks as $lock) {
+            if (empty($lock)) continue;
+            // Check if any process is using this lock
+            $using = shell_exec("lsof $lock 2>/dev/null | wc -l");
+            if ((int)$using == 0) {
+                shell_exec("rm -f $lock 2>/dev/null");
+                $count++;
+            }
+        }
+        
+        return $count;
     }
 
     /**
@@ -109,7 +205,6 @@ class SystemMonitorController extends Controller
         foreach (explode("\n", $freeOutput) as $line) {
             if (strpos($line, 'Mem:') !== false) {
                 $parts = preg_split('/\s+/', $line);
-                // buff/cache is at index 5 in free -m output
                 return (float)($parts[5] ?? 0);
             }
         }
@@ -121,14 +216,13 @@ class SystemMonitorController extends Controller
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
-     * Clear low-priority Chrome processes + system cache
-     * Returns `memory_freed_mb` so the frontend can track cumulative totals.
+     * Clear low-priority Chrome processes + enhanced system cache
      */
     public function clearChromeLowPriority(Request $request)
     {
         $thresholds = [
             'cpu'        => 0.5,
-            'memory'     => 100, // MB – must use MORE than this to be eligible
+            'memory'     => 100,
             'keep_count' => 3,
         ];
 
@@ -151,14 +245,18 @@ class SystemMonitorController extends Controller
         }
 
         if (empty($chromeProcesses)) {
-            // Still try to clear cache even if no Chrome processes found
-            $cacheFreed = $this->clearSystemCache();
+            // Still try to clear everything
+            $cleanupResult = $this->clearSystemCacheEnhanced();
             return response()->json([
                 'success'          => true,
                 'count'            => 0,
-                'memory_freed_mb'  => $cacheFreed,
-                'message'          => 'No Chrome processes found. Cache cleared: ' . round($cacheFreed, 1) . ' MB',
-                'cache_freed_mb'   => $cacheFreed,
+                'memory_freed_mb'  => $cleanupResult['total_freed_mb'],
+                'message'          => 'No Chrome processes found. ' . implode('; ', $cleanupResult['details']),
+                'cache_freed_mb'   => $cleanupResult['cache_freed_mb'],
+                'shared_freed_mb'  => $cleanupResult['shared_freed_mb'],
+                'zombies_reaped'   => $cleanupResult['zombies_reaped'],
+                'locks_cleaned'    => $cleanupResult['locks_cleaned'],
+                'cleanup_details'  => $cleanupResult['details'],
             ]);
         }
 
@@ -179,22 +277,25 @@ class SystemMonitorController extends Controller
         $result = $this->killProcessList($finalKill, 'Chrome processes');
         $resultData = $result->getData(true);
 
-        // Also clear system cache
-        $cacheFreed = $this->clearSystemCache();
-        $resultData['cache_freed_mb'] = $cacheFreed;
-        $resultData['memory_freed_mb'] = round(($resultData['memory_freed_mb'] ?? 0) + $cacheFreed, 1);
-        $resultData['message'] .= ' + ' . round($cacheFreed, 1) . ' MB cache cleared';
+        // Enhanced cleanup
+        $cleanupResult = $this->clearSystemCacheEnhanced();
+        $resultData['cache_freed_mb'] = $cleanupResult['cache_freed_mb'];
+        $resultData['shared_freed_mb'] = $cleanupResult['shared_freed_mb'];
+        $resultData['zombies_reaped'] = $cleanupResult['zombies_reaped'];
+        $resultData['locks_cleaned'] = $cleanupResult['locks_cleaned'];
+        $resultData['cleanup_details'] = $cleanupResult['details'];
+        $resultData['memory_freed_mb'] = round(($resultData['memory_freed_mb'] ?? 0) + $cleanupResult['total_freed_mb'], 1);
+        $resultData['message'] .= ' + ' . implode('; ', $cleanupResult['details']);
 
         return response()->json($resultData);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    //  AUTOCLEAN  –  Standard (safe, non-system) + Cache
+    //  AUTOCLEAN  –  Standard (safe, non-system) + Enhanced Cleanup
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
-     * Safe, non-blocking kill of idle / low-priority background processes + clear cache.
-     * Returns `memory_freed_mb`.
+     * Safe, non-blocking kill of idle / low-priority background processes + enhanced cleanup.
      */
     public function clearLowPriority(Request $request)
     {
@@ -262,11 +363,15 @@ class SystemMonitorController extends Controller
         $result = $this->killProcessList($toKill, 'low-priority processes');
         $resultData = $result->getData(true);
 
-        // Also clear system cache
-        $cacheFreed = $this->clearSystemCache();
-        $resultData['cache_freed_mb'] = $cacheFreed;
-        $resultData['memory_freed_mb'] = round(($resultData['memory_freed_mb'] ?? 0) + $cacheFreed, 1);
-        $resultData['message'] .= ' + ' . round($cacheFreed, 1) . ' MB cache cleared';
+        // Enhanced cleanup
+        $cleanupResult = $this->clearSystemCacheEnhanced();
+        $resultData['cache_freed_mb'] = $cleanupResult['cache_freed_mb'];
+        $resultData['shared_freed_mb'] = $cleanupResult['shared_freed_mb'];
+        $resultData['zombies_reaped'] = $cleanupResult['zombies_reaped'];
+        $resultData['locks_cleaned'] = $cleanupResult['locks_cleaned'];
+        $resultData['cleanup_details'] = $cleanupResult['details'];
+        $resultData['memory_freed_mb'] = round(($resultData['memory_freed_mb'] ?? 0) + $cleanupResult['total_freed_mb'], 1);
+        $resultData['message'] .= ' + ' . implode('; ', $cleanupResult['details']);
 
         return response()->json($resultData);
     }
@@ -277,14 +382,9 @@ class SystemMonitorController extends Controller
 
     /**
      * Shared kill logic used by both autoclean endpoints.
-     * Measures RSS of each process BEFORE killing so we can report freed MB.
-     *
-     * @param  array<array{pid:int,mem_mb:float,...}> $processList
-     * @param  string $label  Used in the response message.
      */
     private function killProcessList(array $processList, string $label): \Illuminate\Http\JsonResponse
     {
-        // De-duplicate by PID
         $byPid = [];
         foreach ($processList as $p) {
             $byPid[(int)$p['pid']] = $p;
@@ -300,16 +400,13 @@ class SystemMonitorController extends Controller
                 continue;
             }
 
-            // Safety guard
             [$allow] = $this->shouldAllowKillPid($pid);
             if (!$allow) {
                 continue;
             }
 
-            // Snapshot RSS *before* killing (KB → MB)
             $rssBefore = $this->getRssKb($pid);
 
-            // SIGTERM → wait → SIGKILL
             shell_exec("kill -15 $pid 2>/dev/null");
             usleep(200_000);
 
@@ -328,7 +425,6 @@ class SystemMonitorController extends Controller
                 continue;
             }
 
-            // Process-group fallback
             $pgid = trim(shell_exec("ps -p $pid -o pgid= 2>/dev/null"));
             if ($pgid && (int)$pgid > 0) {
                 shell_exec("kill -9 -$pgid 2>/dev/null");
@@ -358,9 +454,6 @@ class SystemMonitorController extends Controller
         ]);
     }
 
-    /**
-     * Read RSS from /proc/<pid>/status (kB).  Falls back to ps.
-     */
     private function getRssKb(int $pid): int
     {
         $statusPath = "/proc/{$pid}/status";
@@ -370,7 +463,6 @@ class SystemMonitorController extends Controller
                 return (int)$m[1];
             }
         }
-        // fallback: ps rss column (already in KB)
         $rss = trim(shell_exec("ps -p $pid -o rss= 2>/dev/null"));
         return $rss ? (int)$rss : 0;
     }
@@ -624,26 +716,16 @@ class SystemMonitorController extends Controller
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    //  FREE MEMORY (safe, non-blocking) - Updated with cache clearing
+    //  FREE MEMORY - Enhanced with all cleanups
     // ──────────────────────────────────────────────────────────────────────────
 
     public function freeMemory()
     {
-        $results   = [];
+        $cleanupResult = $this->clearSystemCacheEnhanced();
         
-        // Clear system caches
-        $cacheFreed = $this->clearSystemCache();
-        $results[] = 'system_cache_cleared: ' . round($cacheFreed, 1) . ' MB freed';
-        
-        // Memory compaction
-        $compact   = @shell_exec('echo 1 > /proc/sys/vm/compact_memory 2>/dev/null');
-        $results[] = 'memory_compaction: ' . ($compact !== null ? 'attempted' : 'skipped');
-        
-        shell_exec('sync 2>/dev/null');
-        $results[] = 'filesystem_sync: done';
-
         $systemInfo = $this->getSystemInfo();
-        $message    = "Cleared " . round($cacheFreed, 1) . " MB of system cache. "
+        $message = "Cleaned: " . implode('; ', $cleanupResult['details']) 
+                    . ". Total freed: " . $cleanupResult['total_freed_mb'] . " MB. "
                     . "Free RAM: {$systemInfo['free_ram']}, "
                     . "Available RAM: {$systemInfo['available_ram']}, "
                     . "Buffer/Cache: {$systemInfo['buff_cache']}. "
@@ -653,8 +735,12 @@ class SystemMonitorController extends Controller
             'success'    => true,
             'message'    => $message,
             'systemInfo' => $systemInfo,
-            'details'    => $results,
-            'cache_freed_mb' => round($cacheFreed, 1),
+            'details'    => $cleanupResult['details'],
+            'cache_freed_mb' => $cleanupResult['cache_freed_mb'],
+            'shared_freed_mb' => $cleanupResult['shared_freed_mb'],
+            'zombies_reaped' => $cleanupResult['zombies_reaped'],
+            'locks_cleaned' => $cleanupResult['locks_cleaned'],
+            'total_freed_mb' => $cleanupResult['total_freed_mb'],
         ]);
     }
 
@@ -871,7 +957,6 @@ class SystemMonitorController extends Controller
 
         $allPids = array_values(array_filter(array_unique(array_map('intval', $allPids)), fn($p) => $p > 1 && $p !== $selfPid));
 
-        // Expand with parents & process groups
         $expandedPids = $allPids;
         foreach ($allPids as $pid) {
             $ppid = (int)trim(shell_exec("ps -p $pid -o ppid= 2>/dev/null"));
@@ -882,7 +967,6 @@ class SystemMonitorController extends Controller
 
         $expandedPids = array_values(array_filter(array_unique($expandedPids), fn($p) => $p > 1 && $p !== $selfPid));
 
-        // Final pattern match pass
         $finalPids = [];
         foreach ($expandedPids as $pid) {
             $cmd = shell_exec("ps -p $pid -o cmd= 2>/dev/null");

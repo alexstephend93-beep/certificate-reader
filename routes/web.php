@@ -223,7 +223,7 @@ Route::prefix('ssl-matcher')->name('ssl-matcher.')->group(function () {
     Route::post('/validate-csr', [SSLMatcherController::class, 'validateCSR']);
     Route::post('/match-csr-key', [SSLMatcherController::class, 'matchCSRWithKey']);
     Route::post('/convert-format', [SSLMatcherController::class, 'convertFormat']);
-
+    Route::post('/match-csr-key-cert', [SslMatcherController::class, 'matchCSRKeyCert'])->name('match-csr-key-cert');
 });
 
 

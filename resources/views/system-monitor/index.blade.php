@@ -465,7 +465,13 @@
         font-weight: 500;
         color: white;
         opacity: 1;
-        transition: opacity 0.3s ease;
+        /* transition: opacity 0.3s ease; */
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+    .toast-notification.hiding {
+        opacity: 0;
+        transform: translateX(100%);
     }
     .toast-notification.success { background: #10b981; }
     .toast-notification.warning { background: #f59e0b; }
@@ -1108,26 +1114,39 @@ let toastTimeout = null;
 function showToast(message, type = 'success') {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
+
     const iconMap = {
         success: 'check-circle-fill',
         warning: 'exclamation-triangle-fill',
         error: 'x-circle-fill',
         info: 'info-circle-fill'
     };
+
     toast.className = 'toast-notification ' + type;
-    toast.innerHTML = `<i class="bi bi-${iconMap[type] || 'info-circle-fill'} me-2"></i> ${message}`;
+    toast.style.cursor = 'pointer';
+
+    toast.innerHTML = `
+        <i class="bi bi-${iconMap[type] || 'info-circle-fill'} me-2"></i>
+        ${message}
+    `;
+
     container.appendChild(toast);
 
-    // Clear any existing timeout
-    if (toastTimeout) {
-        clearTimeout(toastTimeout);
-    }
+    const closeToast = () => {
+        if (toastTimeout) {
+            clearTimeout(toastTimeout);
+            toastTimeout = null;
+        }
 
-    toastTimeout = setTimeout(() => {
         toast.classList.add('hiding');
         setTimeout(() => toast.remove(), 300);
-        toastTimeout = null;
-    }, 3000);
+    };
+
+    // Close on click
+    toast.addEventListener('click', closeToast);
+
+    // Auto close after 3 seconds
+    toastTimeout = setTimeout(closeToast, 3000);
 }
 
 function getCpuBarClass(cpu) {

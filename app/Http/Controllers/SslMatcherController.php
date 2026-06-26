@@ -1028,4 +1028,208 @@ class SslMatcherController extends Controller
         
         return $content;
     }
+
+
+    /**
+     * Match CSR, Private Key, and Certificate together
+     */
+    public function matchCSRKeyCert(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'csr' => 'required_without:csr_file|string',
+            'csr_file' => 'required_without:csr|file|mimes:csr,pem|max:512',
+            'private_key' => 'required_without:key_file|string',
+            'key_file' => 'required_without:private_key|file|mimes:key,pem|max:512',
+            'key_password' => 'nullable|string',
+            'certificate' => 'required_without:cert_file|string',
+            'cert_file' => 'required_without:certificate|file|mimes:cer,crt,pem|max:512'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['success' => false, 'errors' => $validator->errors()], 422);
+        }
+
+        try {
+            // Get CSR content
+            $csrContent = $request->input('csr');
+            if ($request->hasFile('csr_file')) {
+                $csrContent = file_get_contents($request->file('csr_file')->getPathname());
+            }
+
+            // Get private key content
+            $keyContent = $request->input('private_key');
+            if ($request->hasFile('key_file')) {
+                $keyContent = file_get_contents($request->file('key_file')->getPathname());
+            }
+
+            // Get certificate content
+            $certContent = $request->input('certificate');
+            if ($request->hasFile('cert_file')) {
+                $certContent = file_get_contents($request->file('cert_file')->getPathname());
+            }
+
+            $keyPassword = $request->input('key_password');
+
+            // Parse CSR
+            $csrInfo = $this->parseCSR($csrContent);
+            if (!$csrInfo) {
+                return response()->json(['success' => false, 'message' => 'Invalid CSR format'], 400);
+            }
+
+            // Parse private key
+            $keyInfo = $this->parsePrivateKey($keyContent, $keyPassword);
+            if (!$keyInfo) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid private key format or wrong password'
+                ], 400);
+            }
+
+            // Parse certificate
+            $certInfo = $this->parseCertificate($certContent);
+            if (!$certInfo) {
+                return response()->json(['success' => false, 'message' => 'Invalid certificate format'], 400);
+            }
+
+            // Extract modulus hashes from all three
+            $csrModulus = $this->extractModulusFromCSR($csrContent);
+            $keyModulus = $this->extractModulusFromKey($keyContent, $keyPassword);
+            $certModulus = $this->extractModulusFromCert($certContent);
+
+            // Compare all three
+            $csrKeyMatch = ($csrModulus === $keyModulus);
+            $csrCertMatch = ($csrModulus === $certModulus);
+            $keyCertMatch = ($keyModulus === $certModulus);
+            
+            // Overall match (all three match)
+            $allMatch = ($csrKeyMatch && $csrCertMatch && $keyCertMatch);
+
+            // Build match details
+            $matchDetails = [
+                'csr_key' => $csrKeyMatch,
+                'csr_cert' => $csrCertMatch,
+                'key_cert' => $keyCertMatch,
+                'all_match' => $allMatch
+            ];
+
+            // Build message
+            if ($allMatch) {
+                $message = '✅ CSR, Private Key, and Certificate ALL MATCH!';
+            } else {
+                $message = '❌ Mismatch detected! ';
+                $mismatches = [];
+                if (!$csrKeyMatch) $mismatches[] = 'CSR ↔ Private Key';
+                if (!$csrCertMatch) $mismatches[] = 'CSR ↔ Certificate';
+                if (!$keyCertMatch) $mismatches[] = 'Private Key ↔ Certificate';
+                $message .= 'Mismatch between: ' . implode(', ', $mismatches);
+            }
+
+            return response()->json([
+                'success' => true,
+                'match' => $allMatch,
+                'match_details' => $matchDetails,
+                'csr' => $csrInfo,
+                'private_key' => $keyInfo,
+                'certificate' => $certInfo,
+                'csr_modulus_hash' => $csrModulus,
+                'key_modulus_hash' => $keyModulus,
+                'cert_modulus_hash' => $certModulus,
+                'message' => $message
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('CSR-Key-Cert Match Error: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Extract modulus hash from CSR
+     */
+    private function extractModulusFromCSR($csrContent)
+    {
+        $tempFile = tempnam(sys_get_temp_dir(), 'csr_');
+        file_put_contents($tempFile, $csrContent);
+        
+        $output = shell_exec("openssl req -noout -modulus -in " . escapeshellarg($tempFile) . " 2>/dev/null | openssl md5");
+        unlink($tempFile);
+        
+        return trim($output);
+    }
+
+    /**
+     * Parse CSR details (reuse existing method or create new one)
+     */
+    private function parseCSR($csrContent)
+    {
+        $tempFile = tempnam(sys_get_temp_dir(), 'csr_');
+        file_put_contents($tempFile, $csrContent);
+        
+        // Get CSR details using openssl
+        $output = shell_exec("openssl req -text -noout -in " . escapeshellarg($tempFile) . " 2>/dev/null");
+        
+        if (empty($output)) {
+            unlink($tempFile);
+            return null;
+        }
+        
+        // Extract subject
+        preg_match('/Subject:\s*(.+)/', $output, $subjectMatch);
+        $subject = $subjectMatch[1] ?? 'N/A';
+        
+        // Extract public key algorithm
+        preg_match('/Public Key Algorithm:\s*(.+)/', $output, $algoMatch);
+        $publicKeyAlgorithm = $algoMatch[1] ?? 'N/A';
+        
+        // Extract key size
+        preg_match('/RSA Public Key:\s*\((\d+)\s+bit\)/', $output, $keySizeMatch);
+        $keySize = $keySizeMatch[1] ?? 'N/A';
+        
+        if ($keySize == 'N/A') {
+            preg_match('/Public-Key:\s*\((\d+)\s+bit\)/', $output, $keySizeMatch2);
+            $keySize = $keySizeMatch2[1] ?? 'N/A';
+        }
+        
+        // Extract signature algorithm
+        preg_match('/Signature Algorithm:\s*(.+)/', $output, $sigMatch);
+        $signatureAlgorithm = $sigMatch[1] ?? 'N/A';
+        
+        // Extract version
+        preg_match('/Version:\s*(\d+)/', $output, $versionMatch);
+        $version = $versionMatch[1] ?? 'N/A';
+        
+        // Get MD5 fingerprint
+        $md5Cmd = "openssl req -noout -modulus -in " . escapeshellarg($tempFile) . " | openssl md5 2>&1";
+        $md5Fingerprint = trim(shell_exec($md5Cmd));
+        
+        // Get SHA256 fingerprint
+        $sha256Cmd = "openssl req -noout -modulus -in " . escapeshellarg($tempFile) . " | openssl sha256 2>&1";
+        $sha256Fingerprint = trim(shell_exec($sha256Cmd));
+        
+        // Extract SANs
+        preg_match_all('/DNS:([^,\s]+)/', $output, $sanMatches);
+        $sanList = $sanMatches[1] ?? [];
+        
+        if (empty($sanList)) {
+            preg_match('/X509v3 Subject Alternative Name:\s+(.+)/', $output, $sanSection);
+            if (!empty($sanSection[1])) {
+                preg_match_all('/DNS:([^,\s]+)/', $sanSection[1], $sanMatches2);
+                $sanList = $sanMatches2[1] ?? [];
+            }
+        }
+        
+        unlink($tempFile);
+        
+        return [
+            'type' => 'Certificate Signing Request (CSR)',
+            'subject' => $subject,
+            'public_key_algorithm' => $publicKeyAlgorithm,
+            'key_size' => $keySize,
+            'signature_algorithm' => $signatureAlgorithm,
+            'version' => $version,
+            'fingerprint_md5' => $md5Fingerprint,
+            'fingerprint_sha256' => $sha256Fingerprint,
+            'san_list' => $sanList
+        ];
+    }
 }

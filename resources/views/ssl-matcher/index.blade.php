@@ -283,8 +283,8 @@
                 <button class="match-tab" data-tab="cert-public">
                     <i class="bi bi-file-text-fill me-2"></i>Cert + Public Key
                 </button>
-                <button class="match-tab" data-tab="certs">
-                    <i class="bi bi-files me-2"></i>Certificate vs Certificate
+                <button class="match-tab" data-tab="csr-key-cert">
+                    <i class="bi bi-diagram-3 me-2"></i>CSR + Private Key + Cert
                 </button>
                 <button class="match-tab" data-tab="pub-key">
                     <i class="bi bi-person-bounding-box me-2"></i>Public Key + Private Key
@@ -631,6 +631,63 @@ DEK-Info: AES-256-CBC,..."></textarea>
                 </div>
             </div>
 
+            <!-- Panel: CSR + Private Key + Certificate -->
+            <div id="panel-csr-key-cert" class="panel">
+                <div class="row g-4">
+                    <div class="col-md-4">
+                        <div class="glass-card p-4">
+                            <h5 class="fw-bold mb-3">
+                                <i class="bi bi-file-earmark-text-fill me-2"></i>
+                                CSR
+                            </h5>
+                            <div class="file-input-group">
+                                <input type="file" id="csrMatchFile" class="form-control" accept=".csr,.pem">
+                                <button class="btn btn-outline-secondary" onclick="clearFile('csrMatchFile', 'csrMatchContent')">
+                                    <i class="bi bi-x-circle"></i> Clear
+                                </button>
+                            </div>
+                            <textarea id="csrMatchContent" rows="6" class="form-control font-monospace" placeholder="-----BEGIN CERTIFICATE REQUEST-----..."></textarea>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="glass-card p-4">
+                            <h5 class="fw-bold mb-3">
+                                <i class="bi bi-key-fill me-2"></i>
+                                Private Key
+                            </h5>
+                            <div class="file-input-group">
+                                <input type="file" id="keyMatchFile" class="form-control" accept=".key,.pem">
+                                <button class="btn btn-outline-secondary" onclick="clearFile('keyMatchFile', 'keyMatchContent')">
+                                    <i class="bi bi-x-circle"></i> Clear
+                                </button>
+                            </div>
+                            <textarea id="keyMatchContent" rows="6" class="form-control font-monospace" placeholder="-----BEGIN PRIVATE KEY-----..."></textarea>
+                            <input type="password" id="keyMatchPassword" class="form-control mt-3" placeholder="Private key password (if encrypted)">
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="glass-card p-4">
+                            <h5 class="fw-bold mb-3">
+                                <i class="bi bi-file-earmark-lock-fill me-2"></i>
+                                Certificate
+                            </h5>
+                            <div class="file-input-group">
+                                <input type="file" id="certMatchFile" class="form-control" accept=".crt,.pem">
+                                <button class="btn btn-outline-secondary" onclick="clearFile('certMatchFile', 'certMatchContent')">
+                                    <i class="bi bi-x-circle"></i> Clear
+                                </button>
+                            </div>
+                            <textarea id="certMatchContent" rows="6" class="form-control font-monospace" placeholder="-----BEGIN CERTIFICATE-----..."></textarea>
+                            <div class="text-center mt-4">
+                                <button class="btn btn-primary btn-lg" onclick="matchCSRKeyCert()">
+                                    <i class="bi bi-check-lg me-2"></i> Check All Matches
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Results Section -->
             <div id="resultsSection" style="display: none;">
                 <div class="result-card">
@@ -722,6 +779,7 @@ DEK-Info: AES-256-CBC,..."></textarea>
   window.downloadConvertedOutput = downloadConvertedOutput;
   window.updateConverterPlaceholders = updateConverterPlaceholders;
   window.applyServerFormat = applyServerFormat;
+  window.matchCSRKeyCert = matchCSRKeyCert;
 
   // Tab switching
   function initTabs() {
@@ -935,6 +993,43 @@ DEK-Info: AES-256-CBC,..."></textarea>
       body: JSON.stringify(payload)
     });
     return response.json();
+  }
+
+
+  async function matchCSRKeyCert() {
+      const csr = document.getElementById('csrMatchContent').value;
+      const privateKey = document.getElementById('keyMatchContent').value;
+      const certificate = document.getElementById('certMatchContent').value;
+      const keyPassword = document.getElementById('keyMatchPassword').value;
+
+      if (!csr && !privateKey && !certificate) {
+          return showToast('Please provide CSR, Private Key, and Certificate', 'error');
+      }
+      if (!csr) return showToast('Please provide CSR content or upload file', 'error');
+      if (!privateKey) return showToast('Please provide private key content or upload file', 'error');
+      if (!certificate) return showToast('Please provide certificate content or upload file', 'error');
+
+      showLoading(true);
+      try {
+          const data = await postJson('/ssl-matcher/match-csr-key-cert', {
+              csr: csr,
+              private_key: privateKey,
+              key_password: keyPassword,
+              certificate: certificate
+          });
+
+          if (data.success) {
+              displayTripleMatchResults(data);
+              showToast(data.message, data.match ? 'success' : 'warning');
+          } else {
+              showToast(data.message || 'Failed to match', 'error');
+          }
+      } catch (e) {
+          console.error(e);
+          showToast('An error occurred', 'error');
+      } finally {
+          showLoading(false);
+      }
   }
 
   async function matchCertKey() {
@@ -1357,6 +1452,167 @@ DEK-Info: AES-256-CBC,..."></textarea>
     if (resultsSection) resultsSection.style.display = 'none';
   }
 
+
+  function displayTripleMatchResults(data) {
+    const matchBadge = document.getElementById('matchBadge');
+    const matchMessage = document.getElementById('matchMessage');
+    const matchDetails = document.getElementById('matchDetails');
+
+    if (!matchBadge || !matchMessage || !matchDetails) return;
+
+    matchBadge.className = `match-badge ${data.match ? 'match-success' : 'match-fail'}`;
+    matchBadge.innerHTML = data.match
+      ? '<i class="bi bi-check-circle-fill me-2"></i> ALL MATCH'
+      : '<i class="bi bi-x-circle-fill me-2"></i> MISMATCH DETECTED';
+
+    // More detailed message
+    let detailedMessage = data.message || '';
+    
+    // Add specific guidance based on what matches
+    if (!data.match) {
+        const mismatches = [];
+        if (!data.match_details.csr_key) mismatches.push('CSR ↔ Private Key');
+        if (!data.match_details.csr_cert) mismatches.push('CSR ↔ Certificate');
+        if (!data.match_details.key_cert) mismatches.push('Private Key ↔ Certificate');
+        
+        if (data.match_details.csr_key && !data.match_details.csr_cert && !data.match_details.key_cert) {
+            detailedMessage += ' 🔑 The Private Key matches the CSR, but the Certificate belongs to a DIFFERENT key pair. You need to use the Certificate that was issued from this CSR.';
+        } else if (!data.match_details.csr_key && data.match_details.csr_cert && !data.match_details.key_cert) {
+            detailedMessage += ' 📜 The CSR matches the Certificate, but the Private Key is from a DIFFERENT key pair.';
+        } else if (!data.match_details.csr_key && !data.match_details.csr_cert && data.match_details.key_cert) {
+            detailedMessage += ' 🔐 The Private Key matches the Certificate, but the CSR is from a DIFFERENT key pair.';
+        } else if (data.match_details.csr_key && data.match_details.csr_cert && !data.match_details.key_cert) {
+            detailedMessage += ' ⚠️ CSR matches both, but Private Key doesn\'t match Certificate - likely using wrong private key.';
+        }
+    } else {
+        detailedMessage += ' ✅ All three components are from the same key pair and match perfectly!';
+    }
+    
+    matchMessage.innerHTML = detailedMessage;
+
+    let detailsHtml = '';
+
+    // Match status cards with better visual indicators
+    detailsHtml += `
+      <div class="detail-card" style="grid-column: 1 / -1;">
+        <h4><i class="bi bi-diagram-3 me-2"></i> Match Status</h4>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <div class="p-3 rounded text-center ${data.match_details.csr_key ? 'bg-success bg-opacity-10 border border-success' : 'bg-danger bg-opacity-10 border border-danger'}">
+              <i class="bi ${data.match_details.csr_key ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger'} me-2"></i>
+              CSR ↔ Private Key
+              <span class="badge ${data.match_details.csr_key ? 'bg-success' : 'bg-danger'} d-block mt-2">
+                ${data.match_details.csr_key ? '✅ MATCH' : '❌ NO MATCH'}
+              </span>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="p-3 rounded text-center ${data.match_details.csr_cert ? 'bg-success bg-opacity-10 border border-success' : 'bg-danger bg-opacity-10 border border-danger'}">
+              <i class="bi ${data.match_details.csr_cert ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger'} me-2"></i>
+              CSR ↔ Certificate
+              <span class="badge ${data.match_details.csr_cert ? 'bg-success' : 'bg-danger'} d-block mt-2">
+                ${data.match_details.csr_cert ? '✅ MATCH' : '❌ NO MATCH'}
+              </span>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="p-3 rounded text-center ${data.match_details.key_cert ? 'bg-success bg-opacity-10 border border-success' : 'bg-danger bg-opacity-10 border border-danger'}">
+              <i class="bi ${data.match_details.key_cert ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger'} me-2"></i>
+              Private Key ↔ Certificate
+              <span class="badge ${data.match_details.key_cert ? 'bg-success' : 'bg-danger'} d-block mt-2">
+                ${data.match_details.key_cert ? '✅ MATCH' : '❌ NO MATCH'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <!-- Summary of what matches -->
+        <div class="mt-3 p-3 bg-light rounded">
+          <strong>Summary:</strong>
+          ${data.match_details.csr_key ? '✅ CSR matches Private Key' : '❌ CSR does NOT match Private Key'} | 
+          ${data.match_details.csr_cert ? '✅ CSR matches Certificate' : '❌ CSR does NOT match Certificate'} | 
+          ${data.match_details.key_cert ? '✅ Private Key matches Certificate' : '❌ Private Key does NOT match Certificate'}
+          <br>
+          <small class="text-muted">
+            <i class="bi bi-info-circle me-1"></i>
+            ${data.match_details.csr_key && !data.match_details.csr_cert && !data.match_details.key_cert 
+              ? '💡 The Private Key matches the CSR, but the Certificate is from a different key pair. You need the Certificate that was issued from this CSR.'
+              : data.match_details.csr_key && data.match_details.csr_cert && !data.match_details.key_cert
+              ? '💡 CSR matches both, but Private Key doesn\'t match Certificate - likely using wrong private key.'
+              : data.match_details.csr_cert && data.match_details.key_cert && !data.match_details.csr_key
+              ? '💡 Certificate and Private Key match, but CSR is from a different key pair.'
+              : '💡 For everything to work, all three must match. This usually means using the CSR to get a Certificate from a CA, then keeping the Private Key.'
+            }
+          </small>
+        </div>
+      </div>
+    `;
+
+    // CSR Details - Show full Subject
+    if (data.csr) {
+      detailsHtml += `
+        <div class="detail-card">
+          <h4><i class="bi bi-file-earmark-text-fill me-2"></i> CSR Details</h4>
+          <div class="detail-row"><span class="detail-label">Subject:</span><span class="detail-value" style="font-size:0.8rem;word-break:break-all;">${escapeHtml(data.csr.subject)}</span></div>
+          <div class="detail-row"><span class="detail-label">Common Name (CN):</span><span class="detail-value">${escapeHtml(data.csr.subject.split('CN=').pop()?.split(',')[0] || 'N/A')}</span></div>
+          <div class="detail-row"><span class="detail-label">Key Size:</span><span class="detail-value">${escapeHtml(data.csr.key_size)} bits</span></div>
+          <div class="detail-row"><span class="detail-label">Signature Algorithm:</span><span class="detail-value">${escapeHtml(data.csr.signature_algorithm)}</span></div>
+          <div class="detail-row"><span class="detail-label">Modulus Hash:</span><span class="fingerprint">${escapeHtml(data.csr_modulus_hash)}</span></div>
+        </div>
+      `;
+    }
+
+    // Private Key Details
+    if (data.private_key) {
+      detailsHtml += `
+        <div class="detail-card">
+          <h4><i class="bi bi-key-fill me-2"></i> Private Key Details</h4>
+          <div class="detail-row"><span class="detail-label">Type:</span><span class="detail-value">${escapeHtml(data.private_key.type)}</span></div>
+          <div class="detail-row"><span class="detail-label">Key Size:</span><span class="detail-value">${escapeHtml(data.private_key.key_size)} bits</span></div>
+          <div class="detail-row"><span class="detail-label">Modulus Hash:</span><span class="fingerprint">${escapeHtml(data.key_modulus_hash)}</span></div>
+        </div>
+      `;
+    }
+
+    // Certificate Details - Show full Subject and highlight differences
+    if (data.certificate) {
+      const certCn = data.certificate.subject.split('CN=').pop()?.split(',')[0] || 'N/A';
+      const csrCn = data.csr ? data.csr.subject.split('CN=').pop()?.split(',')[0] || 'N/A' : 'N/A';
+      const cnMatch = certCn === csrCn;
+      
+      detailsHtml += `
+        <div class="detail-card">
+          <h4><i class="bi bi-file-earmark-lock-fill me-2"></i> Certificate Details</h4>
+          <div class="detail-row"><span class="detail-label">Subject:</span><span class="detail-value" style="font-size:0.8rem;word-break:break-all;">${escapeHtml(data.certificate.subject)}</span></div>
+          <div class="detail-row">
+            <span class="detail-label">Common Name (CN):</span>
+            <span class="detail-value">
+              ${escapeHtml(certCn)}
+              ${!cnMatch ? ' ⚠️ (Does NOT match CSR CN: ' + escapeHtml(csrCn) + ')' : ''}
+            </span>
+          </div>
+          <div class="detail-row"><span class="detail-label">Issuer:</span><span class="detail-value" style="font-size:0.8rem;">${escapeHtml(data.certificate.issuer)}</span></div>
+          <div class="detail-row"><span class="detail-label">Serial Number:</span><span class="detail-value">${escapeHtml(data.certificate.serial_number)}</span></div>
+          <div class="detail-row"><span class="detail-label">Valid From:</span><span class="detail-value">${escapeHtml(data.certificate.valid_from)}</span></div>
+          <div class="detail-row"><span class="detail-label">Valid To:</span><span class="detail-value">${escapeHtml(data.certificate.valid_to)}</span></div>
+          <div class="detail-row"><span class="detail-label">Modulus Hash:</span><span class="fingerprint">${escapeHtml(data.cert_modulus_hash)}</span></div>
+          ${!data.match_details.csr_cert ? `
+            <div class="mt-2 p-2 bg-danger bg-opacity-10 rounded border border-danger">
+              <i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>
+              <strong>Certificate Modulus Hash doesn't match CSR!</strong> This Certificate was issued using a different private key.
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    matchDetails.innerHTML = detailsHtml;
+    const resultsSection = document.getElementById('resultsSection');
+    if (resultsSection) {
+      resultsSection.style.display = 'block';
+      resultsSection.scrollIntoView({ behavior: 'smooth' });
+    }
+}
+
   // Init on load
   document.addEventListener('DOMContentLoaded', function () {
     initTabs();
@@ -1375,6 +1631,10 @@ DEK-Info: AES-256-CBC,..."></textarea>
     setupFileHandler('csrFile', 'csrContent');
     setupFileHandler('csrKeyFile', 'csrKeyContent');
     setupFileHandler('convertFile', 'convertContent');
+
+    setupFileHandler('csrMatchFile', 'csrMatchContent');
+    setupFileHandler('keyMatchFile', 'keyMatchContent');
+    setupFileHandler('certMatchFile', 'certMatchContent');
   });
 })();
 </script>
