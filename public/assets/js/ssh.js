@@ -517,7 +517,20 @@ function openSpecificDomainInVSCode(element) {
     })
     .then(response => response.json())
     .then(data => {
-        let projectPath = '/var/www'; // fallback
+        // Normalize DocumentRoot -> Laravel project root
+        const toProjectRoot = (docRoot) => {
+            if (!docRoot) return null;
+            let p = String(docRoot).trim();
+            // remove trailing slashes
+            p = p.replace(/\/+$/g, '');
+            // remove /public (with or without trailing slash)
+            p = p.replace(/\/public$/i, '');
+            return p || null;
+        };
+
+        // IMPORTANT: avoid opening generic /var/www unless we truly cannot resolve a better path.
+        let projectPath = null; // fallback
+
 
         if (data.success && data.virtual_hosts && data.virtual_hosts.length > 0) {
             // Find VirtualHost that matches the clicked domain
@@ -547,8 +560,8 @@ function openSpecificDomainInVSCode(element) {
             // Use the matched VirtualHost's DocumentRoot
             if (matchedVHost && matchedVHost.document_root) {
                 let documentRoot = matchedVHost.document_root;
-                // Remove /public suffix if exists to get project root
-                projectPath = documentRoot.replace(/\/public\/?$/i, '').replace(/\/public$/, '');
+                projectPath = toProjectRoot(documentRoot);
+
                 console.log(`Found project path for domain ${domain}: ${projectPath} (from DocumentRoot: ${documentRoot})`);
                 showToast(`Opening project for ${domain}`, 'success');
             } else {
@@ -556,9 +569,10 @@ function openSpecificDomainInVSCode(element) {
                 const documentRootMatch = data.content.match(/DocumentRoot\s+([^\s\n]+)/i);
                 if (documentRootMatch) {
                     const documentRoot = documentRootMatch[1];
-                    projectPath = documentRoot.replace(/\/public\/?$/i, '').replace(/\/public$/, '');
+                    projectPath = toProjectRoot(documentRoot);
                     console.log(`Using fallback project path for domain ${domain}: ${projectPath}`);
                     showToast(`Opening project for ${domain} (fallback path)`, 'warning');
+
                 } else {
                     showToast(`Could not determine project path for ${domain}`, 'warning');
                 }
@@ -574,7 +588,22 @@ function openSpecificDomainInVSCode(element) {
         }
         
         // Build VS Code Remote SSH URI
+        // Important: VS Code Remote expects the *remote* folder path.
+        // If we fail to resolve domain → DocumentRoot → project root, do NOT
+        // fall back to a generic /var/www (would open wrong folder).
+        if (!projectPath) {
+            showToast(`Could not resolve project path for ${domain} from Apache config`, 'warning');
+            // Fallback to copying terminal command (still uses resolved path if any)
+            const command = `code --new-window --remote ssh-remote+${host} "${projectPath || ''}"`;
+            navigator.clipboard.writeText(command).then(() => {
+                showToast('VS Code command copied to clipboard.', 'info');
+            });
+            return;
+        }
+
         const vscodeUri = `vscode://vscode-remote/ssh-remote+${host}${projectPath}?windowId=_blank`;
+
+
         
         // Try to open in new window
         try {

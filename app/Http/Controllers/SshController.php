@@ -775,9 +775,11 @@ class SshController extends Controller
                 return rtrim($d, '/');
             }, $cleanDomains);
 
-            // Add the new host to the hosts array
+            // Prevent duplicates: if host already exists, update it instead of creating a second entry
+            $incomingHost = $request->host;
+
             $newHost = [
-                'host' => $request->host,
+                'host' => $incomingHost,
                 'hostname' => $request->hostname,
                 'user' => $request->user,
                 'identity_file' => $request->identity_file,
@@ -786,8 +788,19 @@ class SshController extends Controller
                 'description' => $request->description ?? ''
             ];
 
-            // Add the new host to the existing hosts array
-            $hosts[] = $newHost;
+            $updated = false;
+            foreach ($hosts as $key => $host) {
+                if (($host['host'] ?? null) === $incomingHost) {
+                    $hosts[$key] = $newHost;
+                    $updated = true;
+                    break;
+                }
+            }
+
+            if (!$updated) {
+                $hosts[] = $newHost;
+            }
+
 
             // Write the updated hosts array to the SSH config file
             $this->writeSshConfig($hosts);
