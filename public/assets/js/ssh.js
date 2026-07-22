@@ -1823,9 +1823,13 @@ function fixAllConnections() {
 function saveSshServer() {
     const originalHost = document.getElementById('originalHost').value;
 
+    // Sanitize host name: replace hyphens with underscores before saving
+    const hostInput = document.getElementById('sshHost');
+    hostInput.value = hostInput.value.replace(/-/g, '_');
+
     // Prepare data for submission
     const serverData = {
-        host: document.getElementById('sshHost').value,
+        host: hostInput.value,
         hostname: document.getElementById('sshHostname').value,
         port: document.getElementById('sshPort').value,
         user: document.getElementById('sshUser').value,
@@ -2079,6 +2083,20 @@ function showToast(message, type) {
             toast.remove();
         }
     }, 5000);
+}
+
+// Auto-replace hyphens with underscores in Host Name field as user types
+const sshHostInput = document.getElementById('sshHost');
+if (sshHostInput) {
+    // Replace on every keystroke (as you type)
+    sshHostInput.addEventListener('input', function(e) {
+        this.value = this.value.replace(/-/g, '_');
+    });
+
+    // Replace on blur (when focus leaves the field)
+    sshHostInput.addEventListener('blur', function(e) {
+        this.value = this.value.replace(/-/g, '_');
+    });
 }
 
 // Initialize on page load
