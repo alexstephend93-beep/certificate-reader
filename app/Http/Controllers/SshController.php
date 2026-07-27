@@ -719,7 +719,7 @@ class SshController extends Controller
             }));
 
             // For large configs, limit but allow more
-            $maxHosts = 500; // Allow up to 500 hosts
+            $maxHosts = 1000; // Allow up to 1000 hosts
             $limitedHosts = array_slice($hosts, 0, $maxHosts);
             $hasMore = count($hosts) > $maxHosts;
 

@@ -35,6 +35,41 @@
     .modal-xl {
         max-width: 1300px;
     }
+    .copy-value-btn {
+        background: transparent;
+        border: 1px solid rgba(0,0,0,0.1);
+        border-radius: 8px;
+        padding: 4px 10px;
+        font-size: 0.8rem;
+        cursor: pointer;
+        transition: var(--transition-smooth);
+        color: var(--color-primary);
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        white-space: nowrap;
+    }
+    .copy-value-btn:hover {
+        background: var(--color-primary);
+        color: white;
+        border-color: var(--color-primary);
+    }
+    .copy-value-btn.copied {
+        background: #2ecc71;
+        color: white;
+        border-color: #2ecc71;
+    }
+    .copy-btn-icon {
+        font-size: 1rem;
+        line-height: 1;
+    }
+    .card-header-flex {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 10px;
+    }
+
 </style>
 @endsection
 
@@ -145,28 +180,40 @@
 
                 <div class="col-12 col-sm-6 col-lg-4" data-aos="fade-up" data-aos-delay="100">
                     <div class="result-card">
-                        <h6 class="fw-bold text-uppercase"><i class="bi bi-person-fill me-2"></i> Common Name</h6>
+                        <div class="card-header-flex">
+                            <h6 class="fw-bold text-uppercase mb-0"><i class="bi bi-person-fill me-2"></i> Common Name</h6>
+                            <button class="copy-value-btn" onclick="copyValue(this.closest('.result-card').querySelector('.card-value').innerText.trim(), this)" title="Copy Common Name"><i class="bi bi-clipboard copy-btn-icon"></i></button>
+                        </div>
                         <div class="card-value">{{ $parsedData['Common_Name'] ?? 'N/A' }}</div>
                     </div>
                 </div>
 
                 <div class="col-12 col-sm-6 col-lg-4" data-aos="fade-up" data-aos-delay="150">
                     <div class="result-card">
-                        <h6 class="fw-bold text-uppercase"><i class="bi bi-globe2 me-2"></i> SAN</h6>
+                        <div class="card-header-flex">
+                            <h6 class="fw-bold text-uppercase mb-0"><i class="bi bi-globe2 me-2"></i> SAN</h6>
+                            <button class="copy-value-btn" onclick="copyValue(this.closest('.result-card').querySelector('.card-value').innerText.trim(), this)" title="Copy SAN"><i class="bi bi-clipboard copy-btn-icon"></i></button>
+                        </div>
                         <div class="card-value">{{ $parsedData['SAN'] ?? 'N/A' }}</div>
                     </div>
                 </div>
 
                 <div class="col-12 col-sm-6 col-lg-4" data-aos="fade-up" data-aos-delay="200">
                     <div class="result-card">
-                        <h6 class="fw-bold text-uppercase"><i class="bi bi-building me-2"></i> Organization</h6>
+                        <div class="card-header-flex">
+                            <h6 class="fw-bold text-uppercase mb-0"><i class="bi bi-building me-2"></i> Organization</h6>
+                            <button class="copy-value-btn" onclick="copyValue(this.closest('.result-card').querySelector('.card-value').innerText.trim(), this)" title="Copy Organization"><i class="bi bi-clipboard copy-btn-icon"></i></button>
+                        </div>
                         <div class="card-value">{{ $parsedData['Organization'] ?? 'N/A' }}</div>
                     </div>
                 </div>
 
                 <div class="col-12 col-sm-6 col-lg-4" data-aos="fade-up" data-aos-delay="250">
                     <div class="result-card">
-                        <h6 class="fw-bold text-uppercase"><i class="bi bi-geo-alt-fill me-2"></i> Location</h6>
+                        <div class="card-header-flex">
+                            <h6 class="fw-bold text-uppercase mb-0"><i class="bi bi-geo-alt-fill me-2"></i> Location</h6>
+                            <button class="copy-value-btn" onclick="copyValue(this.closest('.result-card').querySelector('.card-value').innerText.trim(), this)" title="Copy Location"><i class="bi bi-clipboard copy-btn-icon"></i></button>
+                        </div>
                         <div class="card-value">
                             @php
                                 $location = [];
@@ -181,14 +228,20 @@
 
                 <div class="col-12 col-sm-6 col-lg-4" data-aos="fade-up" data-aos-delay="300">
                     <div class="result-card">
-                        <h6 class="fw-bold text-uppercase"><i class="bi bi-diagram-2 me-2"></i> Organizational Unit</h6>
+                        <div class="card-header-flex">
+                            <h6 class="fw-bold text-uppercase mb-0"><i class="bi bi-diagram-2 me-2"></i> Organizational Unit</h6>
+                            <button class="copy-value-btn" onclick="copyValue(this.closest('.result-card').querySelector('.card-value').innerText.trim(), this)" title="Copy Organizational Unit"><i class="bi bi-clipboard copy-btn-icon"></i></button>
+                        </div>
                         <div class="card-value">{{ $parsedData['Organization_Unit'] ?? 'N/A' }}</div>
                     </div>
                 </div>
 
                 <div class="col-12 col-sm-6 col-lg-4" data-aos="fade-up" data-aos-delay="350">
                     <div class="result-card">
-                        <h6 class="fw-bold text-uppercase"><i class="bi bi-pin-map-fill me-2"></i> Address Details</h6>
+                        <div class="card-header-flex">
+                            <h6 class="fw-bold text-uppercase mb-0"><i class="bi bi-pin-map-fill me-2"></i> Address Details</h6>
+                            <button class="copy-value-btn" onclick="copyValue(this.closest('.result-card').querySelector('.card-value').innerText.trim(), this)" title="Copy Address Details"><i class="bi bi-clipboard copy-btn-icon"></i></button>
+                        </div>
                         <div class="card-value">
                             @php
                                 $address = [];
@@ -200,13 +253,31 @@
                     </div>
                 </div>
 
-                @if(!empty($parsedData['ip_address']))
-                <div class="col-12 col-sm-6 col-lg-4" data-aos="fade-up" data-aos-delay="400">
-                    <div class="result-card">
-                        <h2 class="fw-bold" style="font-size:1.6rem; letter-spacing:0.02em; animation: ipPulse 1.2s ease-in-out infinite;">
-                            <i class="bi bi-hdd-network-fill me-2"></i> IP Address
-                        </h2>
-                        <div class="card-value" style="font-weight:900; font-size:1.8rem;">{{ $parsedData['ip_address'] }}</div>
+                @if(!empty($parsedData['ip_address']) || !empty($parsedData['private_ip']))
+                <div class="col-12" data-aos="fade-up" data-aos-delay="400">
+                    <div class="row g-4">
+                        @if(!empty($parsedData['ip_address']))
+                        <div class="col-12 col-sm-6">
+                            <div class="result-card">
+                                <div class="card-header-flex">
+                                    <h6 class="fw-bold text-uppercase mb-0"><i class="bi bi-globe me-2"></i> Public IP Address</h6>
+                                    <button class="copy-value-btn" onclick="copyValue('{{ $parsedData['ip_address'] }}', this)" title="Copy Public IP"><i class="bi bi-clipboard copy-btn-icon"></i></button>
+                                </div>
+                                <div class="card-value" style="font-weight:700; font-size:1.5rem;">{{ $parsedData['ip_address'] }}</div>
+                            </div>
+                        </div>
+                        @endif
+                        @if(!empty($parsedData['private_ip']))
+                        <div class="col-12 col-sm-6">
+                            <div class="result-card">
+                                <div class="card-header-flex">
+                                    <h6 class="fw-bold text-uppercase mb-0"><i class="bi bi-lan me-2"></i> Private / SAN IP Address</h6>
+                                    <button class="copy-value-btn" onclick="copyValue('{{ $parsedData['private_ip'] }}', this)" title="Copy Private IP"><i class="bi bi-clipboard copy-btn-icon"></i></button>
+                                </div>
+                                <div class="card-value" style="font-weight:600; font-size:1.2rem;">{{ $parsedData['private_ip'] }}</div>
+                            </div>
+                        </div>
+                        @endif
                     </div>
                 </div>
                 @endif
@@ -349,6 +420,38 @@
 @section('scripts')
 <script>
     const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+    function copyValue(text, btnElement) {
+        if (!text || text === 'N/A' || text === 'NA') {
+            return;
+        }
+        navigator.clipboard.writeText(text).then(() => {
+            const originalHtml = btnElement.innerHTML;
+            btnElement.innerHTML = '<i class="bi bi-check-lg"></i> Copied!';
+            btnElement.classList.add('copied');
+            setTimeout(() => {
+                btnElement.innerHTML = originalHtml;
+                btnElement.classList.remove('copied');
+            }, 2000);
+        }).catch(() => {
+            // Fallback: select text from a temporary input
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            const originalHtml = btnElement.innerHTML;
+            btnElement.innerHTML = '<i class="bi bi-check-lg"></i> Copied!';
+            btnElement.classList.add('copied');
+            setTimeout(() => {
+                btnElement.innerHTML = originalHtml;
+                btnElement.classList.remove('copied');
+            }, 2000);
+        });
+    }
 
     function copyCmd(btn) {
         const code = btn.previousElementSibling.textContent.trim();

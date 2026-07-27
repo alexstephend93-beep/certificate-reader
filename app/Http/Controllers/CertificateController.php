@@ -162,6 +162,28 @@ class CertificateController extends Controller
         ];
 
         $domain = $result['Common_Name'] ?? 'certificate';
+
+        // Resolve public IP from Common Name (domain)
+        $publicIp = null;
+        $privateIp = null;
+        $cnDomain = $result['Common_Name'] ?? null;
+        if ($cnDomain && preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/', $cnDomain)) {
+            $resolved = @gethostbyname($cnDomain);
+            if ($resolved && $resolved !== $cnDomain && filter_var($resolved, FILTER_VALIDATE_IP)) {
+                $publicIp = $resolved;
+            }
+        }
+        // Extract private/internal IPs from SAN iPAddress entries
+        $sanRaw = $extensions['subjectAltName'] ?? '';
+        if (!empty($sanRaw)) {
+            preg_match_all('/iPAddress:([0-9.]+)/i', $sanRaw, $ipMatches);
+            if (!empty($ipMatches[1])) {
+                $privateIp = implode(', ', $ipMatches[1]);
+            }
+        }
+
+        $result['ip_address'] = $publicIp;
+        $result['private_ip'] = $privateIp;
         $additionalInfo = [];
 
         if (isset($parsed['validFrom_time_t']))
@@ -565,6 +587,17 @@ class CertificateController extends Controller
             'Validation_Level_Icon' => $valLevelIcon,
             'Validation_Level_Desc' => $valLevelDesc
         ];
+
+        // Extract private/internal IPs from SAN iPAddress entries
+        $privateIp = null;
+        $sanRaw = $extensions['subjectAltName'] ?? '';
+        if (!empty($sanRaw)) {
+            preg_match_all('/iPAddress:([0-9.]+)/i', $sanRaw, $ipMatches);
+            if (!empty($ipMatches[1])) {
+                $privateIp = implode(', ', $ipMatches[1]);
+            }
+        }
+        $result['private_ip'] = $privateIp;
 
         $additionalInfo = [];
         if (isset($parsed['validFrom_time_t']))
