@@ -955,7 +955,15 @@ function showApacheConfigModal(host, config, configPath) {
     if (existingModal) existingModal.remove();
 
     document.body.insertAdjacentHTML('beforeend', modalHtml);
-    new bootstrap.Modal(document.getElementById('apacheModal')).show();
+    const apacheModalEl = document.getElementById('apacheModal');
+    const apacheModal = new bootstrap.Modal(apacheModalEl);
+    // Auto-dispose dynamic modal after it is closed to avoid lingering state/backdrops
+    apacheModalEl.addEventListener('hidden.bs.modal', function onHidden() {
+        apacheModalEl.removeEventListener('hidden.bs.modal', onHidden);
+        apacheModal.dispose();
+        apacheModalEl.remove();
+    });
+    apacheModal.show();
 }
 
 function diagnoseServer(host, element) {
@@ -1014,7 +1022,15 @@ function showDiagnosticsModal(host, diagnostics, sshCommand) {
     if (existingModal) existingModal.remove();
 
     document.body.insertAdjacentHTML('beforeend', modalHtml);
-    new bootstrap.Modal(document.getElementById('diagnosticsModal')).show();
+    const diagnosticsModalEl = document.getElementById('diagnosticsModal');
+    const diagnosticsModal = new bootstrap.Modal(diagnosticsModalEl);
+    // Auto-dispose dynamic modal after it is closed to avoid lingering state/backdrops
+    diagnosticsModalEl.addEventListener('hidden.bs.modal', function onHidden() {
+        diagnosticsModalEl.removeEventListener('hidden.bs.modal', onHidden);
+        diagnosticsModal.dispose();
+        diagnosticsModalEl.remove();
+    });
+    diagnosticsModal.show();
 }
 
 function copySshCommand(host) {
@@ -1149,7 +1165,15 @@ function showProxyHealthModal(host, health) {
     if (existingModal) existingModal.remove();
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     try {
-        new bootstrap.Modal(document.getElementById('proxyHealthModal')).show();
+        const proxyHealthModalEl = document.getElementById('proxyHealthModal');
+        const proxyHealthModal = new bootstrap.Modal(proxyHealthModalEl);
+        // Auto-dispose dynamic modal after it is closed to avoid lingering state/backdrops
+        proxyHealthModalEl.addEventListener('hidden.bs.modal', function onHidden() {
+            proxyHealthModalEl.removeEventListener('hidden.bs.modal', onHidden);
+            proxyHealthModal.dispose();
+            proxyHealthModalEl.remove();
+        });
+        proxyHealthModal.show();
     } catch (e) {
         console.error('Bootstrap modal show error:', e);
         showToast('Failed to open health modal, but data was received.', 'warning');
@@ -1695,7 +1719,15 @@ function showCommandModal(title, content, commandText = null) {
     if (existingModal) existingModal.remove();
 
     document.body.insertAdjacentHTML('beforeend', modalHtml);
-    new bootstrap.Modal(document.getElementById('commandModal')).show();
+    const commandModalEl = document.getElementById('commandModal');
+    const commandModal = new bootstrap.Modal(commandModalEl);
+    // Auto-dispose dynamic modal after it is closed to avoid lingering state/backdrops
+    commandModalEl.addEventListener('hidden.bs.modal', function onHidden() {
+        commandModalEl.removeEventListener('hidden.bs.modal', onHidden);
+        commandModal.dispose();
+        commandModalEl.remove();
+    });
+    commandModal.show();
 }
 
 // Copy command to clipboard

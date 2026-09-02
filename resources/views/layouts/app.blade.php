@@ -438,6 +438,49 @@
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // ===== Global Modal Cleanup =====
+        // Fixes "dim screen after closing modals" caused by lingering Bootstrap
+        // backdrops that remain when a modal instance is re-created or its hide
+        // transition is interrupted. This runs for ALL modals on ALL pages.
+        (function () {
+            function cleanupModalState() {
+                var openModals = document.querySelectorAll('.modal.show').length;
+                var backdrops = Array.prototype.slice.call(document.querySelectorAll('.modal-backdrop'));
+
+                if (openModals === 0) {
+                    // No modal open -> remove every lingering backdrop and restore body state
+                    backdrops.forEach(function (b) { if (b.parentNode) b.parentNode.removeChild(b); });
+                    document.body.classList.remove('modal-open');
+                    document.body.style.overflow = '';
+                    document.body.style.paddingRight = '';
+                } else if (backdrops.length > openModals) {
+                    // Modal(s) still open -> remove only the excess backdrops
+                    var excess = backdrops.length - openModals;
+                    for (var i = backdrops.length - 1; i >= 0 && excess > 0; i--) {
+                        backdrops[i].parentNode && backdrops[i].parentNode.removeChild(backdrops[i]);
+                        excess--;
+                    }
+                }
+            }
+
+            // Clean up immediately in case a backdrop is already stuck on page load
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', cleanupModalState);
+            } else {
+                cleanupModalState();
+            }
+
+            // Clean up after ANY modal in the app hides
+            document.addEventListener('hidden.bs.modal', function () {
+                // Wait a tick so Bootstrap's own hide sequence (incl. transition) completes
+                setTimeout(cleanupModalState, 50);
+            });
+
+            // If a modal is shown, strip any duplicate backdrops Bootstrap may have doubled
+            document.addEventListener('shown.bs.modal', cleanupModalState);
+        })();
+    </script>
     <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
     <!-- jQuery (required for Select2) -->
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
