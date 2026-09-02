@@ -78,8 +78,11 @@ function countValidKeys(hosts) {
 
 // Enhanced search function
 function searchServers() {
-    const searchTerm = document.getElementById('searchInput').value.toLowerCase().trim();
-    
+    const searchInputEl = document.getElementById('searchInput');
+    const rawSearchTerm = searchInputEl ? searchInputEl.value : '';
+    // Automatically convert upper case to lower case and normalize whitespace
+    const searchTerm = rawSearchTerm.toLowerCase().trim().replace(/\s+/g, ' ');
+
     if (!searchTerm) {
         loadedHosts = [...allHosts];
         renderServers(loadedHosts);
@@ -88,31 +91,44 @@ function searchServers() {
         if (noResultsMsg) noResultsMsg.style.display = 'none';
         return;
     }
-    
-    const searchWords = searchTerm.split(/\s+/);
-    
+
+    const searchWords = searchTerm.split(' ').filter(Boolean);
+
     loadedHosts = allHosts.filter(host => {
-        const searchableText = [
+        // Fields that should be searchable, all normalized to lower case
+        const rawFields = [
             host.host || '',
             host.hostname || '',
             host.user || '',
             ...(host.domains || []),
-            (host.host || '').replace(/_/g, ' ') || '',
-            (host.hostname || '').replace(/_/g, ' ') || '',
-            host.identity_file || '', // Search in identity file path
-            basename(host.identity_file || ''), // Search in filename only
-            host.description || '' // And description
-        ].join(' ').toLowerCase();
+            host.identity_file || '',
+            basename(host.identity_file || ''),
+            host.description || '',
+            host.pem_file || '',
+            host.file_basename || ''
+        ].map(field => field.toLowerCase()).filter(Boolean);
 
-        // Check if all of the search words are found in the searchable text
+        // Build multiple normalized variations of the host's searchable fields.
+        // 1. raw lowercase values (e.g. "altro_nex_phonepe")
+        // 2. separator characters replaced with spaces (e.g. "altro nex phonepe")
+        // 3. all separators removed / characters concatenated (e.g. "altrenexphonepe"),
+        //    so a search for "altronex" still matches the host "Altro_Nex_Phonepe".
+        const searchableTexts = [
+            ...new Set(rawFields),
+            rawFields.join(' '),
+            rawFields.map(field => field.replace(/[_\-./\\]+/g, ' ')).join(' '),
+            rawFields.map(field => field.replace(/[^a-z0-9]+/g, '')).join(' ')
+        ].filter(Boolean);
+
+        // Check if all of the search words are found in any of the searchable variations
         return searchWords.every(word =>
-            searchableText.includes(word.toLowerCase())
+            searchableTexts.some(text => text.includes(word))
         );
     });
-    
+
     renderServers(loadedHosts);
     updateStats(allHosts.length, countValidKeys(allHosts));
-    
+
     const noResultsMsg = document.getElementById('noResultsMessage');
     if (noResultsMsg) {
         noResultsMsg.style.display = loadedHosts.length === 0 ? 'block' : 'none';
@@ -133,6 +149,19 @@ if (searchInput) {
 
     // Add input event listener for real-time search
     searchInput.addEventListener('input', function(e) {
+        // Directly convert upper case to lower case while typing
+        const el = e.target;
+        if (el.value && el.value !== el.value.toLowerCase()) {
+            const cursorPos = el.selectionStart;
+            el.value = el.value.toLowerCase();
+            // Keep the caret at the same logical position
+            try {
+                el.setSelectionRange(cursorPos, cursorPos);
+            } catch (err) {
+                // Ignore any selection range errors (e.g. some mobile browsers)
+            }
+            e.preventDefault();
+        }
         searchServers();
     });
 
@@ -226,7 +255,7 @@ function renderServers(hosts) {
                             <span class="server-host-name">${host.host}</span>
                         </div>
                         <div class="server-header-actions">
-                            <i class="bi bi-star favorite-star" data-host="${host.host}" style="cursor: pointer; font-size: 1.1rem; color: #cbd5e1;" title="Add to favorites"></i>
+                            <i class="bi ${host.is_favorite ? 'bi-star-fill' : 'bi-star'} favorite-star" data-host="${host.host}" style="cursor: pointer; font-size: 1.1rem; color: ${host.is_favorite ? '#f59e0b' : '#cbd5e1'};" title="${host.is_favorite ? 'Remove from favorites' : 'Add to favorites'}"></i>
                             <button class="btn btn-sm btn-outline-secondary" onclick='editServer("${host.host}")' style="padding: 4px 8px;">
                                 <i class="bi bi-pencil"></i>
                             </button>
@@ -355,6 +384,8 @@ function openSshServerModal(mode, host = null) {
                     document.getElementById('sshIdentityFile').value = data.server.identity_file;
                     document.getElementById('sshDomains').value = data.server.domains ? data.server.domains.join(', ') : '';
                     document.getElementById('sshDescription').value = data.server.description || '';
+                    // Convert any existing upper case values to lower case when populating the edit form
+                    normalizeAllSshFormFields();
                     document.getElementById('sshModalLabel').innerHTML = '<i class="bi bi-pencil-square me-2"></i>Edit SSH Server';
 
                     const modal = new bootstrap.Modal(document.getElementById('sshModal'));
@@ -1823,9 +1854,9 @@ function fixAllConnections() {
 function saveSshServer() {
     const originalHost = document.getElementById('originalHost').value;
 
-    // Sanitize host name: replace hyphens with underscores before saving
+    // Sanitize host name: convert to lower case and replace hyphens with underscores before saving
+    normalizeAllSshFormFields();
     const hostInput = document.getElementById('sshHost');
-    hostInput.value = hostInput.value.replace(/-/g, '_');
 
     // Prepare data for submission
     const serverData = {
@@ -2085,21 +2116,134 @@ function showToast(message, type) {
     }, 5000);
 }
 
-// Auto-replace hyphens with underscores in Host Name field as user types
-const sshHostInput = document.getElementById('sshHost');
-if (sshHostInput) {
-    // Replace on every keystroke (as you type)
-    sshHostInput.addEventListener('input', function(e) {
-        this.value = this.value.replace(/-/g, '_');
-    });
+// Auto-normalize Add/Edit SSH Server form fields:
+// - Convert upper case to lower case (typing, copy-paste, and on blur)
+// - Host Name (sshHost) also replaces hyphens with underscores
+const sshFormLowercaseFields = ['sshHost', 'sshHostname', 'sshUser', 'sshDomains'];
 
-    // Replace on blur (when focus leaves the field)
-    sshHostInput.addEventListener('blur', function(e) {
-        this.value = this.value.replace(/-/g, '_');
+function normalizeSshFormField(id) {
+    const el = document.getElementById(id);
+    if (!el || !el.value) return;
+
+    const cursorPos = el.selectionStart;
+    let newVal = el.value.toLowerCase();
+
+    // Host Name: replace hyphens with underscores (kept for SSH config compatibility)
+    if (id === 'sshHost') {
+        newVal = newVal.replace(/-/g, '_');
+    }
+
+    if (newVal !== el.value) {
+        el.value = newVal;
+        // Keep the caret at the same logical position
+        try {
+            el.setSelectionRange(cursorPos, cursorPos);
+        } catch (err) {
+            // Ignore any selection range errors (e.g. some mobile browsers)
+        }
+    }
+}
+
+function normalizeAllSshFormFields() {
+    sshFormLowercaseFields.forEach(function(id) {
+        normalizeSshFormField(id);
     });
 }
+
+// Attach listeners to the lowercase fields in the Add/Edit SSH Server modal
+sshFormLowercaseFields.forEach(function(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+
+    // Live conversion while typing
+    el.addEventListener('input', function() {
+        normalizeSshFormField(id);
+    });
+
+    // Conversion after pasting text
+    el.addEventListener('paste', function() {
+        // Wait for the browser to insert the pasted text before normalizing
+        setTimeout(function() {
+            normalizeSshFormField(id);
+        }, 0);
+    });
+
+    // Final cleanup when focus leaves the field
+    el.addEventListener('blur', function() {
+        normalizeSshFormField(id);
+    });
+});
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     loadServers();
+
+    // Favorite star toggle handler (delegated)
+    document.addEventListener('click', function(e) {
+        const star = e.target.closest('.favorite-star');
+        if (!star) return;
+
+        const host = star.getAttribute('data-host');
+        if (!host) return;
+
+        // Optimistic UI update
+        const wasFavorite = star.classList.contains('bi-star-fill');
+        if (wasFavorite) {
+            star.classList.remove('bi-star-fill');
+            star.classList.add('bi-star');
+            star.style.color = '#cbd5e1';
+            star.title = 'Add to favorites';
+        } else {
+            star.classList.remove('bi-star');
+            star.classList.add('bi-star-fill');
+            star.style.color = '#f59e0b';
+            star.title = 'Remove from favorites';
+        }
+
+        fetch('/ssh/toggle-favorite', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': csrfToken
+            },
+            body: JSON.stringify({ host: host })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (!data.success) {
+                // Revert on failure
+                if (wasFavorite) {
+                    star.classList.add('bi-star-fill');
+                    star.classList.remove('bi-star');
+                    star.style.color = '#f59e0b';
+                    star.title = 'Remove from favorites';
+                } else {
+                    star.classList.add('bi-star');
+                    star.classList.remove('bi-star-fill');
+                    star.style.color = '#cbd5e1';
+                    star.title = 'Add to favorites';
+                }
+                showToast('Failed to toggle favorite', 'danger');
+            } else {
+                showToast(data.is_favorite ? 'Added to favorites' : 'Removed from favorites', 'success');
+            }
+        })
+        .catch(error => {
+            // Revert on error
+            if (wasFavorite) {
+                star.classList.add('bi-star-fill');
+                star.classList.remove('bi-star');
+                star.style.color = '#f59e0b';
+                star.title = 'Remove from favorites';
+            } else {
+                star.classList.add('bi-star');
+                star.classList.remove('bi-star-fill');
+                star.style.color = '#cbd5e1';
+                star.title = 'Add to favorites';
+            }
+            console.error('Favorite toggle error:', error);
+            showToast('Failed to toggle favorite', 'danger');
+        });
+    });
 });

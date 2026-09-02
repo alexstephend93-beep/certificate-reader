@@ -8,6 +8,7 @@ use App\Services\SshConfigParser;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use App\Models\DatabaseCredential;
+use App\Models\SshServer;
 use phpseclib3\Net\SSH2;
 use phpseclib3\Crypt\PublicKeyLoader;
 use File;
@@ -604,9 +605,9 @@ class SshController extends Controller
         // Filter out invalid hosts (global configs and empty entries)
         $validHosts = array_filter($hosts, function($host) {
             // Skip global configuration "Host *"
-            if ($host['host'] === '*') {
+if ($host['host'] === '*') {
                 return false;
-    }
+            }
 
             return true;
         });
@@ -629,20 +630,6 @@ class SshController extends Controller
                 $content .= "    Port {$host['port']}\n";
             }
 
-            // Always add these for every host
-            $content .= "    IdentitiesOnly yes\n";
-            $content .= "    PreferredAuthentications publickey\n";
-            $content .= "    PubkeyAuthentication yes\n";
-            $content .= "    PasswordAuthentication no\n";
-            $content .= "    PubkeyAcceptedKeyTypes +ssh-rsa\n";
-            $content .= "    HostKeyAlgorithms +ssh-rsa\n";
-            $content .= "    ServerAliveInterval 60\n";
-            $content .= "    ServerAliveCountMax 3\n";
-            $content .= "    TCPKeepAlive yes\n";
-            $content .= "    Compression yes\n";
-            $content .= "    StrictHostKeyChecking accept-new\n";
-            $content .= "    ConnectTimeout 15\n";
-            $content .= "    ConnectionAttempts 2\n";
 
             // Add domains as comments
             if (!empty($host['domains'])) {
@@ -658,6 +645,22 @@ class SshController extends Controller
             if (!empty($host['description'])) {
                 $content .= "    # {$host['description']}\n";
             }
+
+        // Add global defaults block at the end (applies to ALL hosts)
+        $content .= "# ============================================\n";
+        $content .= "# Global Defaults (applies to all hosts above)\n";
+        $content .= "# ============================================\n";
+        $content .= "Host *\n";
+        $content .= "    IdentitiesOnly yes\n";
+        $content .= "    PreferredAuthentications publickey\n";
+        $content .= "    PasswordAuthentication no\n";
+        $content .= "    PubkeyAcceptedKeyTypes +ssh-rsa\n";
+        $content .= "    HostKeyAlgorithms +ssh-rsa\n";
+        $content .= "    ServerAliveInterval 60\n";
+        $content .= "    Compression yes\n";
+        $content .= "    StrictHostKeyChecking accept-new\n";
+        $content .= "    ConnectTimeout 15\n";
+        $content .= "    ConnectionAttempts 2\n";
 
             $content .= "\n";
         }
@@ -682,6 +685,32 @@ class SshController extends Controller
     }
     
     /**
+     * Sync SSH servers from config file to database
+     */
+    private function syncServersFromConfig()
+    {
+        $configHosts = $this->parseSshConfigWithDomains();
+
+        foreach ($configHosts as $configHost) {
+            SshServer::updateOrCreate(
+                ['host' => $configHost['host']],
+                [
+                    'hostname' => $configHost['hostname'] ?? '',
+                    'user' => $configHost['user'] ?? '',
+                    'identity_file' => $configHost['identity_file'] ?? '',
+                    'port' => $configHost['port'] ?? 22,
+                    'domains' => !empty($configHost['domains']) ? $configHost['domains'] : [],
+                    'description' => $configHost['description'] ?? '',
+                ]
+            );
+        }
+
+        // Remove from DB hosts that no longer exist in config
+        $configHostNames = collect($configHosts)->pluck('host')->toArray();
+        SshServer::whereNotIn('host', $configHostNames)->delete();
+    }
+
+    /**
      * Display SSH servers index page
      */
     public function index()
@@ -695,23 +724,37 @@ class SshController extends Controller
     public function listServers(Request $request): JsonResponse
     {
         try {
-            // Get SSH servers from SSH config file
-            $hosts = $this->parseSshConfigWithDomains();
-            $connectionHistory = Cache::get('ssh_connection_history', []);
-            $favorites = Cache::get('ssh_favorite_servers', []);
+            // Sync config to DB first
+            $this->syncServersFromConfig();
 
-            foreach ($hosts as &$host) {
-                $host['last_connected'] = $connectionHistory[$host['host']] ?? null;
-                $host['is_favorite'] = in_array($host['host'], $favorites);
+            // Get servers from DB, ordered: favorites first, then by host name
+            $dbServers = SshServer::ordered()->get();
+
+            $connectionHistory = Cache::get('ssh_connection_history', []);
+
+            $hosts = $dbServers->map(function ($server) use ($connectionHistory) {
+                $host = [
+                    'host' => $server->host,
+                    'hostname' => $server->hostname,
+                    'user' => $server->user,
+                    'identity_file' => $server->identity_file,
+                    'port' => $server->port,
+                    'domains' => $server->domains ?? [],
+                    'description' => $server->description ?? '',
+                    'is_favorite' => $server->is_favorite,
+                    'last_connected' => $connectionHistory[$server->host] ?? null,
+                ];
 
                 // Add key status
-                $keyPath = $host['identity_file'] ?? '';
+                $keyPath = $server->identity_file ?? '';
                 $host['key_exists'] = false;
                 if (!empty($keyPath)) {
                     $fullPath = $this->expandPath($keyPath);
                     $host['key_exists'] = file_exists($fullPath);
                 }
-            }
+
+                return $host;
+            })->toArray();
 
             $totalServers = count($hosts);
             $validKeys = count(array_filter($hosts, function($h) {
@@ -719,7 +762,7 @@ class SshController extends Controller
             }));
 
             // For large configs, limit but allow more
-            $maxHosts = 1000; // Allow up to 1000 hosts
+            $maxHosts = 1000;
             $limitedHosts = array_slice($hosts, 0, $maxHosts);
             $hasMore = count($hosts) > $maxHosts;
 
@@ -805,6 +848,19 @@ class SshController extends Controller
             // Write the updated hosts array to the SSH config file
             $this->writeSshConfig($hosts);
 
+            // Sync to DB
+            SshServer::updateOrCreate(
+                ['host' => $newHost['host']],
+                [
+                    'hostname' => $newHost['hostname'],
+                    'user' => $newHost['user'],
+                    'identity_file' => $newHost['identity_file'],
+                    'port' => $newHost['port'],
+                    'domains' => $newHost['domains'],
+                    'description' => $newHost['description'],
+                ]
+            );
+
             $successMsg = 'Server added successfully!';
             if ($isJsonRequest) {
                 return response()->json([
@@ -889,6 +945,24 @@ class SshController extends Controller
             if ($updated) {
                 $this->writeSshConfig($hosts);
 
+                // Sync to DB
+                SshServer::updateOrCreate(
+                    ['host' => $request->host],
+                    [
+                        'hostname' => $request->hostname,
+                        'user' => $request->user,
+                        'identity_file' => $request->identity_file,
+                        'port' => $request->port ?? 22,
+                        'domains' => array_filter($request->domains ?? []),
+                        'description' => $request->description ?? '',
+                    ]
+                );
+
+                // If host was renamed, update or delete the old record
+                if ($originalHost !== $request->host) {
+                    SshServer::where('host', $originalHost)->delete();
+                }
+
                 $successMsg = 'Server updated successfully!';
                 if ($isJsonRequest) {
                     return response()->json([
@@ -960,6 +1034,10 @@ class SshController extends Controller
             // Re-index array
             $hosts = array_values($hosts);
             $this->writeSshConfig($hosts);
+
+            // Delete from DB
+            SshServer::where('host', $host)->delete();
+
             return response()->json(['success' => true, 'message' => 'Server deleted successfully']);
         }
         
@@ -1072,6 +1150,11 @@ class SshController extends Controller
         $history = Cache::get('ssh_connection_history', []);
         $history[$request->host] = now()->toDateTimeString();
         Cache::put('ssh_connection_history', $history, now()->addDays(30));
+        
+        // Also update DB
+        SshServer::where('host', $request->host)->update([
+            'last_connected_at' => now()
+        ]);
         
         return response()->json(['success' => true]);
     }
@@ -1677,23 +1760,23 @@ class SshController extends Controller
         $request->validate([
             'host' => 'required|string'
         ]);
-        
-        $favorites = Cache::get('ssh_favorite_servers', []);
-        
-        if (in_array($request->host, $favorites)) {
-            $favorites = array_diff($favorites, [$request->host]);
-            $isFavorite = false;
-        } else {
-            $favorites[] = $request->host;
-            $isFavorite = true;
+
+        $server = SshServer::where('host', $request->host)->first();
+
+        if (!$server) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Server not found'
+            ], 404);
         }
-        
-        Cache::put('ssh_favorite_servers', $favorites, now()->addDays(30));
-        
+
+        $server->is_favorite = !$server->is_favorite;
+        $server->save();
+
         return response()->json([
             'success' => true,
-            'is_favorite' => $isFavorite,
-            'favorites' => $favorites
+            'is_favorite' => $server->is_favorite,
+            'favorites' => SshServer::where('is_favorite', true)->pluck('host')->toArray()
         ]);
     }
     
@@ -1702,7 +1785,7 @@ class SshController extends Controller
      */
     public function getFavorites()
     {
-        $favorites = Cache::get('ssh_favorite_servers', []);
+        $favorites = SshServer::where('is_favorite', true)->pluck('host')->toArray();
         return response()->json([
             'success' => true,
             'favorites' => $favorites
