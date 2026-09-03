@@ -1967,56 +1967,108 @@ class CommandSeeder extends Seeder
                 'icon' => 'activity'
             ],
             [
-    'name' => 'Fetch and Split SSL Certificate Chain from Domain',
-    'category' => 'fetch ssl',
-    'sub_category' => 'certificate',
-    'command' => 'tmp=$(mktemp -d); openssl s_client -connect pay.outward.firstfnance.com:443 -showcerts </dev/null 2>/dev/null | awk \'/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/\' > "$tmp/chain.pem"; csplit -s -z -f "$tmp/cert-" "$tmp/chain.pem" \'/-----BEGIN CERTIFICATE-----/\' \'{*}\' >/dev/null; files=("$tmp"/cert-*); total=${#files[@]}; for ((i=0;i<total;i++)); do if [ $i -eq 0 ]; then echo "================ LEAF CERTIFICATE ================"; elif [ $i -eq $((total-1)) ]; then echo "================ ROOT CERTIFICATE ================"; else echo "============ INTERMEDIATE CERTIFICATE $i =========="; fi; cat "${files[$i]}"; echo; done; rm -rf "$tmp"',
-    'description' => 'Fetches the SSL certificate chain from a domain, splits it into individual certificates, and identifies LEAF, INTERMEDIATE, and ROOT certificates. Automatically cleans up temporary files.',
-    'alternate_commands' => json_encode([
-        'openssl s_client -connect example.com:443 -showcerts </dev/null 2>/dev/null | awk \'/BEGIN CERT/,/END CERT/ {print}\' > chain.pem'
-    ]),
-    'example_usage' => 'tmp=$(mktemp -d); openssl s_client -connect pay.outward.firstfnance.com:443 -showcerts </dev/null 2>/dev/null | awk \'/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/\' > "$tmp/chain.pem"; csplit -s -z -f "$tmp/cert-" "$tmp/chain.pem" \'/-----BEGIN CERTIFICATE-----/\' \'{*}\' >/dev/null; files=("$tmp"/cert-*); total=${#files[@]}; for ((i=0;i<total;i++)); do if [ $i -eq 0 ]; then echo "================ LEAF CERTIFICATE ================"; elif [ $i -eq $((total-1)) ]; then echo "================ ROOT CERTIFICATE ================"; else echo "============ INTERMEDIATE CERTIFICATE $i =========="; fi; cat "${files[$i]}"; echo; done; rm -rf "$tmp"',
-    'notes' => 'Combines certificate fetching and splitting. The first certificate is the LEAF (server certificate), the last is the ROOT, and the ones in between are INTERMEDIATE certificates.',
-    'tags' => 'ssl,certificate,chain,fetch,split,openssl',
-    'os' => 'linux,macos',
-    'danger_level' => 'low',
-    'icon' => 'shield-check'
-],
-[
-    'name' => 'Split Certificate Bundle into Individual Certificates',
-    'category' => 'fetch ssl',
-    'sub_category' => 'certificate',
-    'command' => 'tmp=$(mktemp -d); csplit -s -z -f "$tmp/cert-" bundle.pem \'/-----BEGIN CERTIFICATE-----/\' \'{*}\' >/dev/null; files=("$tmp"/cert-*); total=${#files[@]}; for ((i=0;i<total;i++)); do subj=$(openssl x509 -in "${files[$i]}" -noout -subject | sed \'s/^subject=//\'); iss=$(openssl x509 -in "${files[$i]}" -noout -issuer | sed \'s/^issuer=//\'); if [ "$subj" = "$iss" ]; then echo "================ ROOT CERTIFICATE ================"; elif [ $i -eq 0 ]; then echo "================ LEAF CERTIFICATE ================"; else echo "============ INTERMEDIATE CERTIFICATE ============"; fi; openssl x509 -in "${files[$i]}" -noout -subject -issuer; echo; cat "${files[$i]}"; echo; done; rm -rf "$tmp"',
-    'description' => 'Splits a certificate bundle file into individual certificates, identifies ROOT, LEAF, and INTERMEDIATE certificates, and displays each with subject and issuer information.',
-    'alternate_commands' => json_encode([
-        'awk \'/BEGIN CERTIFICATE/,/END CERTIFICATE/ {print > "cert" NR ".pem"}\' bundle.pem',
-        'csplit -f cert- -b %02d.pem bundle.pem \'/-----BEGIN CERTIFICATE-----/\' \'{\*}\''
-    ]),
-    'example_usage' => 'tmp=$(mktemp -d); csplit -s -z -f "$tmp/cert-" bundle.pem \'/-----BEGIN CERTIFICATE-----/\' \'{*}\' >/dev/null; files=("$tmp"/cert-*); total=${#files[@]}; for ((i=0;i<total;i++)); do subj=$(openssl x509 -in "${files[$i]}" -noout -subject | sed \'s/^subject=//\'); iss=$(openssl x509 -in "${files[$i]}" -noout -issuer | sed \'s/^issuer=//\'); if [ "$subj" = "$iss" ]; then echo "================ ROOT CERTIFICATE ================"; elif [ $i -eq 0 ]; then echo "================ LEAF CERTIFICATE ================"; else echo "============ INTERMEDIATE CERTIFICATE ============"; fi; openssl x509 -in "${files[$i]}" -noout -subject -issuer; echo; cat "${files[$i]}"; echo; done; rm -rf "$tmp"',
-    'notes' => 'Creates a temporary directory, splits the bundle, identifies certificate types based on subject/issuer comparison, and displays each certificate. Automatically cleans up temporary files.',
-    'tags' => 'ssl,certificate,bundle,split,csplit,openssl',
-    'os' => 'linux,macos',
-    'danger_level' => 'low',
-    'icon' => 'file-code'
-],
-[
-    'name' => 'Fetch SSL Certificate Chain from Domain (Simple)',
-    'category' => 'fetch ssl',
-    'sub_category' => 'certificate',
-    'command' => 'openssl s_client -connect pay.outward.firstfnance.com:443 -showcerts </dev/null',
-    'description' => 'Establishes an SSL/TLS connection to the specified domain and displays the entire certificate chain including the leaf certificate, intermediate certificates, and root certificate.',
-    'alternate_commands' => json_encode([
-        'openssl s_client -connect example.com:443 -showcerts -servername example.com </dev/null',
-        'echo | openssl s_client -connect example.com:443 -showcerts 2>/dev/null',
-        'openssl s_client -connect example.com:443 -showcerts -tls1_2 </dev/null'
-    ]),
-    'example_usage' => 'openssl s_client -connect pay.outward.firstfnance.com:443 -showcerts </dev/null',
-    'notes' => 'Replace pay.outward.firstfnance.com with your target domain. Use -servername for SNI support when connecting to shared hosting. Pipe stderr to /dev/null to suppress connection noise.',
-    'tags' => 'ssl,certificate,chain,openssl,s_client',
-    'os' => 'linux,macos',
-    'danger_level' => 'low',
-    'icon' => 'shield-lock'
-]
+                'name' => 'Fetch and Split SSL Certificate Chain from Domain',
+                'category' => 'fetch ssl',
+                'sub_category' => 'certificate',
+                'command' => 'tmp=$(mktemp -d); openssl s_client -connect pay.outward.firstfnance.com:443 -showcerts </dev/null 2>/dev/null | awk \'/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/\' > "$tmp/chain.pem"; csplit -s -z -f "$tmp/cert-" "$tmp/chain.pem" \'/-----BEGIN CERTIFICATE-----/\' \'{*}\' >/dev/null; files=("$tmp"/cert-*); total=${#files[@]}; for ((i=0;i<total;i++)); do if [ $i -eq 0 ]; then echo "================ LEAF CERTIFICATE ================"; elif [ $i -eq $((total-1)) ]; then echo "================ ROOT CERTIFICATE ================"; else echo "============ INTERMEDIATE CERTIFICATE $i =========="; fi; cat "${files[$i]}"; echo; done; rm -rf "$tmp"',
+                'description' => 'Fetches the SSL certificate chain from a domain, splits it into individual certificates, and identifies LEAF, INTERMEDIATE, and ROOT certificates. Automatically cleans up temporary files.',
+                'alternate_commands' => json_encode([
+                    'openssl s_client -connect example.com:443 -showcerts </dev/null 2>/dev/null | awk \'/BEGIN CERT/,/END CERT/ {print}\' > chain.pem'
+                ]),
+                'example_usage' => 'tmp=$(mktemp -d); openssl s_client -connect pay.outward.firstfnance.com:443 -showcerts </dev/null 2>/dev/null | awk \'/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/\' > "$tmp/chain.pem"; csplit -s -z -f "$tmp/cert-" "$tmp/chain.pem" \'/-----BEGIN CERTIFICATE-----/\' \'{*}\' >/dev/null; files=("$tmp"/cert-*); total=${#files[@]}; for ((i=0;i<total;i++)); do if [ $i -eq 0 ]; then echo "================ LEAF CERTIFICATE ================"; elif [ $i -eq $((total-1)) ]; then echo "================ ROOT CERTIFICATE ================"; else echo "============ INTERMEDIATE CERTIFICATE $i =========="; fi; cat "${files[$i]}"; echo; done; rm -rf "$tmp"',
+                'notes' => 'Combines certificate fetching and splitting. The first certificate is the LEAF (server certificate), the last is the ROOT, and the ones in between are INTERMEDIATE certificates.',
+                'tags' => 'ssl,certificate,chain,fetch,split,openssl',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'shield-check'
+            ],
+            [
+                'name' => 'Split Certificate Bundle into Individual Certificates',
+                'category' => 'fetch ssl',
+                'sub_category' => 'certificate',
+                'command' => 'tmp=$(mktemp -d); csplit -s -z -f "$tmp/cert-" bundle.pem \'/-----BEGIN CERTIFICATE-----/\' \'{*}\' >/dev/null; files=("$tmp"/cert-*); total=${#files[@]}; for ((i=0;i<total;i++)); do subj=$(openssl x509 -in "${files[$i]}" -noout -subject | sed \'s/^subject=//\'); iss=$(openssl x509 -in "${files[$i]}" -noout -issuer | sed \'s/^issuer=//\'); if [ "$subj" = "$iss" ]; then echo "================ ROOT CERTIFICATE ================"; elif [ $i -eq 0 ]; then echo "================ LEAF CERTIFICATE ================"; else echo "============ INTERMEDIATE CERTIFICATE ============"; fi; openssl x509 -in "${files[$i]}" -noout -subject -issuer; echo; cat "${files[$i]}"; echo; done; rm -rf "$tmp"',
+                'description' => 'Splits a certificate bundle file into individual certificates, identifies ROOT, LEAF, and INTERMEDIATE certificates, and displays each with subject and issuer information.',
+                'alternate_commands' => json_encode([
+                    'awk \'/BEGIN CERTIFICATE/,/END CERTIFICATE/ {print > "cert" NR ".pem"}\' bundle.pem',
+                    'csplit -f cert- -b %02d.pem bundle.pem \'/-----BEGIN CERTIFICATE-----/\' \'{\*}\''
+                ]),
+                'example_usage' => 'tmp=$(mktemp -d); csplit -s -z -f "$tmp/cert-" bundle.pem \'/-----BEGIN CERTIFICATE-----/\' \'{*}\' >/dev/null; files=("$tmp"/cert-*); total=${#files[@]}; for ((i=0;i<total;i++)); do subj=$(openssl x509 -in "${files[$i]}" -noout -subject | sed \'s/^subject=//\'); iss=$(openssl x509 -in "${files[$i]}" -noout -issuer | sed \'s/^issuer=//\'); if [ "$subj" = "$iss" ]; then echo "================ ROOT CERTIFICATE ================"; elif [ $i -eq 0 ]; then echo "================ LEAF CERTIFICATE ================"; else echo "============ INTERMEDIATE CERTIFICATE ============"; fi; openssl x509 -in "${files[$i]}" -noout -subject -issuer; echo; cat "${files[$i]}"; echo; done; rm -rf "$tmp"',
+                'notes' => 'Creates a temporary directory, splits the bundle, identifies certificate types based on subject/issuer comparison, and displays each certificate. Automatically cleans up temporary files.',
+                'tags' => 'ssl,certificate,bundle,split,csplit,openssl',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'file-code'
+            ],
+            [
+                'name' => 'Fetch SSL Certificate Chain from Domain (Simple)',
+                'category' => 'fetch ssl',
+                'sub_category' => 'certificate',
+                'command' => 'openssl s_client -connect pay.outward.firstfnance.com:443 -showcerts </dev/null',
+                'description' => 'Establishes an SSL/TLS connection to the specified domain and displays the entire certificate chain including the leaf certificate, intermediate certificates, and root certificate.',
+                'alternate_commands' => json_encode([
+                    'openssl s_client -connect example.com:443 -showcerts -servername example.com </dev/null',
+                    'echo | openssl s_client -connect example.com:443 -showcerts 2>/dev/null',
+                    'openssl s_client -connect example.com:443 -showcerts -tls1_2 </dev/null'
+                ]),
+                'example_usage' => 'openssl s_client -connect pay.outward.firstfnance.com:443 -showcerts </dev/null',
+                'notes' => 'Replace pay.outward.firstfnance.com with your target domain. Use -servername for SNI support when connecting to shared hosting. Pipe stderr to /dev/null to suppress connection noise.',
+                'tags' => 'ssl,certificate,chain,openssl,s_client',
+                'os' => 'linux,macos',
+                'danger_level' => 'low',
+                'icon' => 'shield-lock'
+            ],
+            [
+                'name' => 'Check Webhook URL Response Status',
+                'category' => 'curl',
+                'sub_category' => 'webhook',
+                'command' => 'curl -s -o /dev/null -w "%{http_code}\n" -X POST https://txnlive.gracegarbs.in/process/t2/payment-webhook',
+                'description' => 'Sends a POST request to a payment webhook URL and displays only the HTTP status code without downloading the response body.',
+                'alternate_commands' => json_encode([
+                    'curl -s -o /dev/null -w "%{http_code}" -X POST https://example.com/webhook',
+                    'curl -s -o /dev/null -w "%{http_code} %{time_total}" -X POST https://example.com/webhook',
+                    'curl -s -o /dev/null -w "Status: %{http_code} | Time: %{time_total}s" -X POST https://example.com/webhook'
+                ]),
+                'example_usage' => 'curl -s -o /dev/null -w "%{http_code}\n" -X POST https://txnlive.gracegarbs.in/process/t2/payment-webhook',
+                'notes' => 'Useful for monitoring webhook endpoints. Returns status codes like 200 (success), 404 (not found), 500 (server error). Add -v for verbose output to debug.',
+                'tags' => 'curl,webhook,payment,status,healthcheck',
+                'os' => 'all',
+                'danger_level' => 'low',
+                'icon' => 'globe2'
+            ],
+            [
+                'name' => 'Check Webhook URL Status with Response Time',
+                'category' => 'curl',
+                'sub_category' => 'webhook',
+                'command' => 'curl -s -o /dev/null -w "Status: %{http_code} | Time: %{time_total}s\n" -X POST https://txnlive.gracegarbs.in/process/t2/payment-webhook',
+                'description' => 'Sends a POST request to a webhook URL and displays both the HTTP status code and the total response time.',
+                'alternate_commands' => json_encode([
+                    'curl -s -o /dev/null -w "HTTP %{http_code} in %{time_total}s" -X POST https://example.com/webhook',
+                    'curl -s -o /dev/null -w "%{http_code} %{time_total}" -X POST https://example.com/webhook'
+                ]),
+                'example_usage' => 'curl -s -o /dev/null -w "Status: %{http_code} | Time: %{time_total}s\n" -X POST https://txnlive.gracegarbs.in/process/t2/payment-webhook',
+                'notes' => 'Includes response time to monitor performance. Useful for debugging slow webhook endpoints.',
+                'tags' => 'curl,webhook,payment,status,time,performance',
+                'os' => 'all',
+                'danger_level' => 'low',
+                'icon' => 'clock-history'
+            ],
+            [
+                'name' => 'Check Webhook with Headers and Verbose Output',
+                'category' => 'curl',
+                'sub_category' => 'webhook',
+                'command' => 'curl -v -X POST https://txnlive.gracegarbs.in/process/t2/payment-webhook -H "Content-Type: application/json" -d \'{"test": "data"}\'',
+                'description' => 'Sends a POST request to a webhook with custom headers and JSON payload, showing verbose output for debugging.',
+                'alternate_commands' => json_encode([
+                    'curl -v -X POST https://example.com/webhook -H "Content-Type: application/json" -d \'{"key":"value"}\'',
+                    'curl -v -X POST https://example.com/webhook -H "Authorization: Bearer token" -d \'{"test":true}\''
+                ]),
+                'example_usage' => 'curl -v -X POST https://txnlive.gracegarbs.in/process/t2/payment-webhook -H "Content-Type: application/json" -d \'{"test": "data"}\'',
+                'notes' => 'Verbose mode (-v) shows request headers, response headers, and connection details. Useful for debugging webhook integration issues.',
+                'tags' => 'curl,webhook,payment,debug,verbose',
+                'os' => 'all',
+                'danger_level' => 'low',
+                'icon' => 'bug'
+            ]
         ];
 
         foreach ($commands as $command) {
