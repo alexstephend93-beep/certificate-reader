@@ -1258,6 +1258,1051 @@ class SshController extends Controller
         }
     }
     
+    // ========== PROJECT EXPLORER (Remote File Browser) ==========
+
+    private const MAX_PREVIEW_BYTES = 25 * 1024 * 1024; // 25 MB — safe in-browser render cap. Files of any size can exist; only previews that would risk hanging Chrome are blocked.
+    private const MAX_EDIT_BYTES = 2 * 1024 * 1024; // 2 MB — in-browser EDITING cap. A giant textarea freezes Chrome; bigger files stay previewable/downloadable, just not editable.
+
+    private function validateExplorePath(string $path): bool
+    {
+        if ($path === '' || $path[0] !== '/') {
+            return false;
+        }
+        // Reject '.'/'..' segments — no legitimate UI-generated path contains
+        // them, and they would enable path traversal for write operations.
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '.' || $segment === '..') {
+                return false;
+            }
+        }
+        // Only allow safe characters - reject shell metacharacters / control chars
+        return (bool) preg_match('#^/[a-zA-Z0-9@%+=:,._~/ ()[\]-]*$#', $path);
+    }
+
+    /**
+     * Validate a NEW single file/folder name for create/rename operations:
+     * no slashes, no traversal, no empty or dot-only names. Uses a whitelist
+     * loop (same safe set as the path validator, minus '/') so filenames like
+     * "my file (v2).txt" work while shell metacharacters are rejected.
+     */
+    private function validateExploreName(?string $name): bool
+    {
+        if ($name === null || trim($name) === '' || $name === '.' || $name === '..') {
+            return false;
+        }
+        if (strpos($name, '/') !== false || strpos($name, chr(0)) !== false) {
+            return false;
+        }
+        $allowed = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,._~ ()[]-';
+        for ($i = 0, $n = strlen($name); $i < $n; $i++) {
+            if (strpos($allowed, $name[$i]) === false) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Run one remote command over the explorer SSH base. Returns [exitCode, outputLines].
+     * The local `timeout` wrapper guarantees the PHP request can never hang
+     * forever on a stalled SSH channel (the stuck "Saving..." spinner bug).
+     */
+    private function exploreRun(string $base, string $remoteCmd, int $timeoutSec = 60): array
+    {
+        $out = [];
+        exec('timeout ' . (int) $timeoutSec . ' ' . $base . ' ' . escapeshellarg($remoteCmd) . ' 2>/dev/null', $out, $rc);
+        return [$rc, $out];
+    }
+
+    private function remoteQuote(string $path): string
+    {
+        return '"' . str_replace(['\\', '"', '$', '`'], ['\\\\', '\\"', '\\$', '\\`'], $path) . '"';
+    }
+
+    private function buildExploreSshBase(string $username, string $hostname, int $port, string $identityFile): string
+    {
+        // BatchMode=yes: SSH must NEVER stop and wait for a password/passphrase
+        // prompt — a blocked channel keeps the PHP exec() alive forever, which
+        // is exactly what made the editor's "Saving..." spinner spin endlessly.
+        // Key auth (the -i file) is the only supported path here.
+        return sprintf(
+            'ssh -i %s -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p %d %s@%s',
+            escapeshellarg($identityFile),
+            $port,
+            escapeshellarg($username),
+            escapeshellarg($hostname)
+        );
+    }
+
+    /**
+     * Wrap a remote command so it runs as ROOT whenever the server allows
+     * non-interactive sudo (typical for cloud/EC2 "ubuntu" users), falling
+     * back to the login user otherwise. sudo -n never prompts for a password
+     * — it fails fast instead — so this can never hang the HTTP request.
+     *
+     * Used for every WRITE operation (save / mkdir / touch / rename / chmod /
+     * duplicate / upload): files owned by root (e.g. Laravel logs) were
+     * previously unwritable and produced "Check permissions and disk space."
+     */
+    private function exploreAsRoot(string $remoteCmd): string
+    {
+        $quoted = escapeshellarg($remoteCmd);
+        return 'if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then '
+            . 'sudo -n sh -c ' . $quoted . '; else sh -c ' . $quoted . '; fi';
+    }
+
+    private function exploreRequestParams(Request $request): array
+    {
+        return [
+            'host' => $request->input('host'),
+            'hostname' => $request->input('hostname'),
+            'username' => $request->input('username'),
+            'identity_file' => $this->expandPath($request->input('identity_file')),
+            'port' => (int) $request->input('port', 22),
+        ];
+    }
+
+    private function exploreCheckParams(array $p): ?JsonResponse
+    {
+        if (empty($p['host']) || empty($p['hostname']) || empty($p['username']) || empty($p['identity_file'])) {
+            return response()->json(['success' => false, 'message' => 'Missing server connection details'], 422);
+        }
+        if (!file_exists($p['identity_file'])) {
+            return response()->json(['success' => false, 'message' => 'Identity file not found: ' . basename($p['identity_file'])], 404);
+        }
+        return null;
+    }
+
+    private function formatBytes(int $bytes): string
+    {
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $i = 0;
+        $value = (float) $bytes;
+        while ($value >= 1024 && $i < count($units) - 1) {
+            $value /= 1024;
+            $i++;
+        }
+        return round($value, 2) . ' ' . $units[$i];
+    }
+
+    private function formatExploreDate(?string $raw, ?string $tzOffset = null): ?string
+    {
+        if ($raw === null || $raw === '' || $raw === '-') {
+            return null;
+        }
+        $ts = is_numeric($raw) ? (int) $raw : strtotime($raw);
+        if ($ts === false || $ts <= 0) return null;
+        // Render in the REMOTE server's local timezone (offset captured via
+        // `date +%z` over the same SSH session) — NOT the PHP app timezone
+        // (config app.timezone = UTC), which made every timestamp on IST
+        // servers appear exactly 5h30m earlier than reality.
+        $tzName = $this->remoteOffsetToTimezone($tzOffset);
+        if ($tzName !== null) {
+            $dt = new \DateTime('@' . $ts);
+            $dt->setTimezone(new \DateTimeZone($tzName));
+            return $dt->format('Y-m-d H:i');
+        }
+        return gmdate('Y-m-d H:i', $ts);
+    }
+
+    /**
+     * Convert a `date +%z` style offset (e.g. "+0530") into a PHP timezone
+     * name (e.g. "+05:30"). Returns null when missing/malformed.
+     */
+    private function remoteOffsetToTimezone(?string $offset): ?string
+    {
+        if ($offset === null) return null;
+        $offset = trim($offset);
+        if (!preg_match('/^([+-])(\d{2})(\d{2})$/', $offset, $m)) return null;
+        $tzName = $m[1] . $m[2] . ':' . $m[3];
+        try {
+            new \DateTimeZone($tzName);
+        } catch (\Exception $e) {
+            return null;
+        }
+        return $tzName;
+    }
+
+    /**
+     * Raw Unix epoch from a `stat` field ('' / '-' / '0' → null = unknown).
+     * The client renders this in the viewer's local timezone.
+     */
+    private function exploreTs(?string $raw): ?int
+    {
+        if ($raw === null || $raw === '' || $raw === '-') return null;
+        if (!ctype_digit($raw)) return null;
+        $ts = (int) $raw;
+        return $ts > 0 ? $ts : null;
+    }
+
+    public function exploreDirectory(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'nullable|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $path = $request->input('path') ?: '/var/www';
+        if (!$this->validateExplorePath($path)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path requested'], 422);
+        }
+
+        $remoteCmd = 'cd ' . $this->remoteQuote($path)
+            . ' 2>/dev/null && pwd 2>/dev/null && { ls -1A 2>/dev/null | while IFS= read -r f; do '
+            . 'if [ -d "$f" ]; then t=D; elif [ -f "$f" ]; then t=F; else t=O; fi; '
+            . 'st=$(stat -c "%s|%Y|%W|%a|%U|%G" "$f" 2>/dev/null); '
+            . 'printf "%s|%s|%s\n" "$t" "$st" "$f"; done 2>/dev/null; date +%z 2>/dev/null; }';
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        $output = [];
+        exec('timeout 60 ' . $base . ' ' . escapeshellarg($remoteCmd) . ' 2>/dev/null', $output, $returnCode);
+
+        if ($returnCode !== 0) {
+            return response()->json(['success' => false, 'message' => 'Unable to read directory. Check the path and SSH access.']);
+        }
+
+        $resolvedPath = $path;
+        $entries = [];
+
+        // The last output line is the remote server's UTC offset (`date +%z`,
+        // e.g. "+0530") captured in the same SSH round-trip. It lets us render
+        // created/modified timestamps in the SERVER's local timezone instead
+        // of the PHP app's timezone (UTC), which displayed wrong times.
+        $tzOffset = null;
+        if (!empty($output)) {
+            $lastLine = trim(end($output));
+            if (preg_match('/^[+-]\d{4}$/', $lastLine)) {
+                $tzOffset = $lastLine;
+                array_pop($output);
+            }
+        }
+
+        foreach ($output as $index => $line) {
+            if ($index === 0) {
+                $resolvedPath = trim($line) ?: $path;
+                continue;
+            }
+            $parts = explode('|', $line, 8);
+            if (count($parts) !== 8) continue;
+            [$type, $sizeRaw, $mtimeRaw, $btimeRaw, $permsRaw, $ownerRaw, $groupRaw, $name] = $parts;
+            if ($name === '') continue;
+            $entries[] = [
+                'name' => $name,
+                'type' => $type,
+                'size' => (int) $sizeRaw,
+                'is_dir' => $type === 'D',
+                // Octal permission (644/755...) + owner/group for the Perm column
+                'perms' => $permsRaw !== '' ? $permsRaw : null,
+                'owner' => $ownerRaw !== '' ? $ownerRaw : null,
+                'group' => $groupRaw !== '' ? $groupRaw : null,
+                'created_at' => $this->formatExploreDate($btimeRaw, $tzOffset),
+                'modified_at' => $this->formatExploreDate($mtimeRaw, $tzOffset),
+                // Raw epochs — the browser renders these in the viewer's local
+                // timezone (IST for us), regardless of the remote OS timezone.
+                'created_ts' => $this->exploreTs($btimeRaw),
+                'modified_ts' => $this->exploreTs($mtimeRaw),
+            ];
+        }
+
+        // Directory sizes: one batched `du -sb` for every subdirectory, capped with a
+        // remote `timeout` so huge trees can never slow the listing down — dirs that
+        // don't finish in time simply get a null size and show "—" in the UI.
+        $dirPaths = [];
+        $prefix = $resolvedPath === '/' ? '' : rtrim($resolvedPath, '/');
+        foreach ($entries as $e) {
+            if ($e['is_dir']) {
+                $dirPaths[$prefix . '/' . $e['name']] = null;
+            }
+        }
+
+        if (!empty($dirPaths)) {
+            $duCmd = 'timeout 8 du -sb --';
+            foreach (array_keys($dirPaths) as $dp) {
+                $duCmd .= ' ' . $this->remoteQuote($dp);
+            }
+            $duCmd .= ' 2>/dev/null';
+
+            $duOut = [];
+            exec('timeout 30 ' . $base . ' ' . escapeshellarg($duCmd) . ' 2>/dev/null', $duOut, $duRc);
+
+            if ($duRc === 0 || !empty($duOut)) {
+                foreach ($duOut as $line) {
+                    $tab = strpos($line, "\t");
+                    if ($tab === false) continue;
+                    $bytes = (int) substr($line, 0, $tab);
+                    $dp = substr($line, $tab + 1);
+                    if (array_key_exists($dp, $dirPaths)) {
+                        $dirPaths[$dp] = $bytes;
+                    }
+                }
+            }
+
+            foreach ($entries as &$e) {
+                $e['dir_size'] = $e['is_dir'] ? ($dirPaths[$prefix . '/' . $e['name']] ?? null) : null;
+            }
+            unset($e);
+        }
+
+        usort($entries, function ($a, $b) {
+            if ($a['is_dir'] === $b['is_dir']) return strcasecmp($a['name'], $b['name']);
+            return $a['is_dir'] ? -1 : 1;
+        });
+
+        return response()->json(['success' => true, 'path' => $resolvedPath, 'entries' => $entries]);
+    }
+
+    public function exploreFile(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $path = $request->input('path');
+        if (!$this->validateExplorePath($path)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path requested'], 422);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+
+        // Stat the remote file (size + last modified + created when available).
+        // `date +%z` runs in the SAME SSH round-trip and yields the server's
+        // local UTC offset so the preview modal renders Created/Modified in the
+        // server's timezone rather than the app's UTC.
+        $statCmd = 'stat -Lc "%s|%Y|%W" ' . $this->remoteQuote($path) . ' 2>/dev/null; date +%z 2>/dev/null';
+        $statOut = [];
+        exec('timeout 60 ' . $base . ' ' . escapeshellarg($statCmd) . ' 2>/dev/null', $statOut, $statRc);
+
+        $size = 0;
+        $mtime = null;
+        $btime = null;
+        $mtimeTs = null;
+        $btimeTs = null;
+        $tzOffset = null;
+        $statLine = null;
+        foreach ($statOut as $line) {
+            $line = trim($line);
+            if ($line === '') continue;
+            if ($statLine === null && strpos($line, '|') !== false) {
+                $statLine = $line;
+                continue;
+            }
+            if ($tzOffset === null && preg_match('/^[+-]\d{4}$/', $line)) {
+                $tzOffset = $line;
+            }
+            if ($statLine !== null && $tzOffset !== null) break;
+        }
+        if ($statLine !== null) {
+            [$sizeRaw, $mtimeRaw, $btimeRaw] = array_pad(explode('|', $statLine, 3), 3, '');
+            $size = (int) $sizeRaw;
+            $mtime = $this->formatExploreDate($mtimeRaw, $tzOffset);
+            $btime = $this->formatExploreDate($btimeRaw, $tzOffset);
+            $mtimeTs = $this->exploreTs($mtimeRaw);
+            $btimeTs = $this->exploreTs($btimeRaw);
+        }
+
+        if ($statRc !== 0 || $size <= 0) {
+            return response()->json(['success' => false, 'message' => 'File not found or not readable on the server.']);
+        }
+
+        if ($size > self::MAX_PREVIEW_BYTES) {
+            return response()->json([
+                'success' => false,
+                'code' => 'FILE_TOO_LARGE',
+                'size' => $size,
+                'message' => 'Previewing "' . basename($path) . '" (' . $this->formatBytes($size)
+                    . ') may make Chrome unresponsive. This file is too large to preview safely in the browser. Use the download icon instead.',
+            ]);
+        }
+
+        // base64 (not raw cat) so every byte survives the round-trip exactly —
+        // reading via `exec()` line-splitting would silently strip the file's
+        // trailing newline(s), corrupting the buffer on every open/save cycle
+        $b64Cmd = 'base64 ' . $this->remoteQuote($path) . ' 2>/dev/null';
+        $b64Out = [];
+        exec('timeout 60 ' . $base . ' ' . escapeshellarg($b64Cmd) . ' 2>/dev/null', $b64Out, $b64Rc);
+
+        if ($b64Rc !== 0) {
+            return response()->json(['success' => false, 'message' => 'Failed to read file content.']);
+        }
+
+        $content = base64_decode(implode('', $b64Out), true);
+        if ($content === false) {
+            return response()->json(['success' => false, 'message' => 'Failed to decode file content.']);
+        }
+
+        return response()->json([
+            'success' => true,
+            'name' => basename($path),
+            'path' => $path,
+            'size' => $size,
+            'modified_ts' => $mtimeTs,
+            'content' => $content,
+        ]);
+    }
+
+    // ---------- Project Explorer: file-manager write operations ----------
+
+    /**
+     * Read a file's exact bytes for in-browser editing. Refuses files above
+     * MAX_EDIT_BYTES (a giant textarea freezes Chrome) and binary content.
+     */
+    public function exploreEditRead(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $path = $request->input('path');
+        if (!$this->validateExplorePath($path)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path requested'], 422);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+
+        // Stat first — refuse oversized files BEFORE pulling any content over SSH.
+        // Run via the root wrapper: files owned by root with restrictive modes
+        // must still be openable in the editor (the save is root-wrapped too).
+        [$statRc, $statOut] = $this->exploreRun($base, $this->exploreAsRoot('stat -c "%s|%Y" ' . $this->remoteQuote($path) . ' 2>/dev/null'), 30);
+        if ($statRc !== 0 || empty($statOut)) {
+            return response()->json(['success' => false, 'message' => 'File not found or not readable on the server.']);
+        }
+        [$sizeRaw, $mtimeRaw] = array_pad(explode('|', trim($statOut[0]), 2), 2, '');
+        $size = (int) $sizeRaw;
+        $modifiedTs = $this->exploreTs($mtimeRaw);
+
+        if ($size > self::MAX_EDIT_BYTES) {
+            return response()->json([
+                'success' => false,
+                'code' => 'FILE_TOO_LARGE',
+                'size' => $size,
+                'message' => 'Editing "' . basename($path) . '" (' . $this->formatBytes($size) . ') is not supported. Files above '
+                    . $this->formatBytes(self::MAX_EDIT_BYTES) . ' can freeze the browser — use download instead.',
+            ]);
+        }
+
+        // Stream exact bytes to a local temp file — an exec() output array
+        // silently strips the trailing newline, which is fatal for an editor.
+        $tmp = tempnam(sys_get_temp_dir(), 'sshedit_');
+        if ($tmp === false) {
+            return response()->json(['success' => false, 'message' => 'Could not create a local temp file.']);
+        }
+        $catCmd = 'cat ' . $this->remoteQuote($path) . ' 2>/dev/null';
+        exec('timeout 60 ' . $base . ' ' . escapeshellarg($this->exploreAsRoot($catCmd)) . ' > ' . escapeshellarg($tmp) . ' 2>/dev/null', $catOut, $catRc);
+        if ($catRc !== 0) {
+            @unlink($tmp);
+            return response()->json(['success' => false, 'message' => 'Failed to read the file content from the server.']);
+        }
+        $content = (string) file_get_contents($tmp);
+        @unlink($tmp);
+
+        if (strpos($content, chr(0)) !== false) {
+            return response()->json([
+                'success' => false,
+                'message' => '"' . basename($path) . '" appears to be a binary file and cannot be edited as text.',
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'name' => basename($path),
+            'path' => $path,
+            'size' => $size,
+            'modified_ts' => $modifiedTs,
+            'content' => $content,
+        ]);
+    }
+
+    /**
+     * Save edited content back to the remote file. Content is piped via
+     * stdin (never interpolated into the shell command), the remote file is
+     * re-stat'ed first (size + concurrent-modification guards) and the
+     * written byte count is verified afterwards.
+     */
+    public function exploreSave(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'content' => 'nullable|string',
+            'expected_mtime' => 'nullable|integer',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $path = $request->input('path');
+        if (!$this->validateExplorePath($path)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path requested'], 422);
+        }
+
+        // Read content from the RAW JSON body — Laravel's global TrimStrings
+        // middleware trims every parsed input value, which would silently
+        // strip the file's trailing newline(s) (and any trailing spaces)
+        // from the edited buffer on every single save.
+        $rawBody = json_decode((string) $request->getContent(), true);
+        $content = (is_array($rawBody) && isset($rawBody['content']) && is_scalar($rawBody['content']))
+            ? (string) $rawBody['content']
+            : (string) $request->input('content', '');
+        $expectedMtime = $request->input('expected_mtime');
+
+        if (strlen($content) > self::MAX_EDIT_BYTES) {
+            return response()->json([
+                'success' => false,
+                'code' => 'FILE_TOO_LARGE',
+                'message' => 'The edited content (' . $this->formatBytes(strlen($content)) . ') exceeds the '
+                    . $this->formatBytes(self::MAX_EDIT_BYTES) . ' editing limit. Nothing was saved.',
+            ]);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+
+        // Re-stat right before writing: refuse to clobber a huge file, and
+        // detect edits made on the server after the user opened the editor.
+        // Root-wrapped so root-owned files (e.g. Laravel logs) stat correctly.
+        [$statRc, $statOut] = $this->exploreRun($base, $this->exploreAsRoot('stat -c "%s|%Y" ' . $this->remoteQuote($path) . ' 2>/dev/null'), 30);
+        if ($statRc !== 0 || empty($statOut)) {
+            return response()->json(['success' => false, 'message' => 'The file no longer exists on the server — nothing was saved.']);
+        }
+        [$sizeRaw, $mtimeRaw] = array_pad(explode('|', trim($statOut[0]), 2), 2, '');
+        if ((int) $sizeRaw > self::MAX_EDIT_BYTES) {
+            return response()->json([
+                'success' => false,
+                'code' => 'FILE_TOO_LARGE',
+                'message' => 'This file has grown beyond the ' . $this->formatBytes(self::MAX_EDIT_BYTES)
+                    . ' editing limit since you opened it. Nothing was saved.',
+            ]);
+        }
+        $remoteMtime = $this->exploreTs($mtimeRaw);
+        if ($expectedMtime !== null && $expectedMtime !== '' && $remoteMtime !== null && (int) $expectedMtime !== $remoteMtime) {
+            return response()->json([
+                'success' => false,
+                'code' => 'FILE_CHANGED',
+                'message' => 'This file was modified on the server after you opened it. Refresh and re-open the file before saving.',
+            ]);
+        }
+
+        // Write exact bytes via stdin, then verify size+mtime in the SAME
+        // remote shell — the command only succeeds when BOTH parts succeed.
+        $tmp = tempnam(sys_get_temp_dir(), 'sshedit_');
+        if ($tmp === false || file_put_contents($tmp, $content) === false) {
+            return response()->json(['success' => false, 'message' => 'Could not stage the content locally.']);
+        }
+        $writeCmd = 'cat > ' . $this->remoteQuote($path)
+            . ' 2>/dev/null && stat -c "%s|%Y" ' . $this->remoteQuote($path) . ' 2>/dev/null';
+        $verifyOut = [];
+        exec('timeout 120 ' . $base . ' ' . escapeshellarg($this->exploreAsRoot($writeCmd)) . ' < ' . escapeshellarg($tmp) . ' 2>/dev/null', $verifyOut, $rc);
+        @unlink($tmp);
+
+        if ($rc !== 0 || empty($verifyOut)) {
+            return response()->json(['success' => false, 'message' => 'Failed to write the file on the server. Check disk space — or the file may be root-owned and this server does not allow passwordless sudo.']);
+        }
+        [$newSize, $newMtime] = array_pad(explode('|', trim($verifyOut[0]), 2), 2, '');
+        if ((int) $newSize !== strlen($content)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Save verification failed — the file size on the server does not match the edited content. Re-open the file and check it.',
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => '"' . basename($path) . '" saved successfully (' . $this->formatBytes(strlen($content)) . ')',
+            'size' => strlen($content),
+            'modified_ts' => $this->exploreTs($newMtime),
+        ]);
+    }
+
+    /**
+     * Rename (move) a file or folder within its current directory.
+     */
+    public function exploreRename(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'new_name' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $path = rtrim($request->input('path'), '/');
+        $newName = trim($request->input('new_name'));
+        if (!$this->validateExplorePath($path) || !$this->validateExploreName($newName)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path or name requested'], 422);
+        }
+
+        $parent = dirname($path);
+        $target = ($parent === '/' ? '' : $parent) . '/' . $newName;
+        if (!$this->validateExplorePath($target)) {
+            return response()->json(['success' => false, 'message' => 'Invalid target path'], 422);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        // Refuse to silently overwrite an existing target
+        $cmd = 'if [ -e ' . $this->remoteQuote($target) . ' ]; then echo __TARGET_EXISTS__; exit 2; fi; '
+            . 'mv -- ' . $this->remoteQuote($path) . ' ' . $this->remoteQuote($target) . ' 2>/dev/null';
+        // Renamed as root so items inside root-owned directories can be moved
+        [$rc, $out] = $this->exploreRun($base, $this->exploreAsRoot($cmd), 30);
+
+        if ($rc !== 0) {
+            if (!empty($out) && trim($out[0]) === '__TARGET_EXISTS__') {
+                return response()->json(['success' => false, 'message' => 'A file or folder named "' . $newName . '" already exists in this directory.']);
+            }
+            return response()->json(['success' => false, 'message' => 'Rename failed — the server denied permission or the item no longer exists.']);
+        }
+        return response()->json(['success' => true, 'message' => 'Renamed to "' . $newName . '" successfully']);
+    }
+
+    /**
+     * Create a new directory inside the currently browsed directory.
+     */
+    public function exploreMkdir(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'name' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $parent = rtrim($request->input('path'), '/');
+        $name = trim($request->input('name'));
+        if (!$this->validateExplorePath($parent) || !$this->validateExploreName($name)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path or folder name requested'], 422);
+        }
+
+        $dirPath = ($parent === '/' ? '' : $parent) . '/' . $name;
+        if (!$this->validateExplorePath($dirPath)) {
+            return response()->json(['success' => false, 'message' => 'Invalid folder path requested'], 422);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        $cmd = 'if [ -e ' . $this->remoteQuote($dirPath) . ' ]; then echo __TARGET_EXISTS__; exit 2; fi; '
+            . 'mkdir -m 755 -- ' . $this->remoteQuote($dirPath) . ' 2>/dev/null';
+        // Created as ROOT with an explicit 755 permission so new folders are
+        // web-server friendly and root-owned trees accept new subfolders.
+        [$rc, $out] = $this->exploreRun($base, $this->exploreAsRoot($cmd), 30);
+
+        if ($rc !== 0) {
+            if (!empty($out) && trim($out[0]) === '__TARGET_EXISTS__') {
+                return response()->json(['success' => false, 'message' => 'A file or folder named "' . $name . '" already exists in this directory.']);
+            }
+            return response()->json(['success' => false, 'message' => 'Could not create the folder — the server denied permission.']);
+        }
+        return response()->json(['success' => true, 'message' => 'Folder "' . $name . '" created successfully', 'path' => $dirPath]);
+    }
+
+    /**
+     * Create a new empty file inside the currently browsed directory.
+     */
+    public function exploreTouch(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'name' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $parent = rtrim($request->input('path'), '/');
+        $name = trim($request->input('name'));
+        if (!$this->validateExplorePath($parent) || !$this->validateExploreName($name)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path or file name requested'], 422);
+        }
+
+        $filePath = ($parent === '/' ? '' : $parent) . '/' . $name;
+        if (!$this->validateExplorePath($filePath)) {
+            return response()->json(['success' => false, 'message' => 'Invalid file path requested'], 422);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        // touch on an existing file would silently bump its mtime — refuse instead
+        $cmd = 'if [ -e ' . $this->remoteQuote($filePath) . ' ]; then echo __TARGET_EXISTS__; exit 2; fi; '
+            . 'touch -- ' . $this->remoteQuote($filePath) . ' 2>/dev/null && chmod 644 -- ' . $this->remoteQuote($filePath) . ' 2>/dev/null && stat -c "%s|%Y" ' . $this->remoteQuote($filePath) . ' 2>/dev/null';
+        // Created as ROOT with a standard 644 permission
+        [$rc, $out] = $this->exploreRun($base, $this->exploreAsRoot($cmd), 30);
+
+        if ($rc !== 0 || empty($out)) {
+            if (!empty($out) && trim($out[0]) === '__TARGET_EXISTS__') {
+                return response()->json(['success' => false, 'message' => 'A file or folder named "' . $name . '" already exists in this directory.']);
+            }
+            return response()->json(['success' => false, 'message' => 'Could not create the file — the server denied permission.']);
+        }
+        [$sizeRaw, $mtimeRaw] = array_pad(explode('|', trim($out[0]), 2), 2, '');
+        return response()->json([
+            'success' => true,
+            'message' => 'File "' . $name . '" created successfully',
+            'path' => $filePath,
+            'size' => (int) $sizeRaw,
+            'modified_ts' => $this->exploreTs($mtimeRaw),
+        ]);
+    }
+
+    /**
+     * Delete a file (rm) or a directory recursively (rm -rf), with hard
+     * safety rails against wiping anything near the filesystem root.
+     */
+    public function exploreDelete(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'type' => 'nullable|string|in:F,D',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $path = rtrim($request->input('path'), '/');
+        if (!$this->validateExplorePath($path)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path requested'], 422);
+        }
+        // Hard safety rails for a destructive (potentially recursive) delete:
+        // never the root, never a top-level system directory like /etc or /usr.
+        if ($path === '' || $path === '/' || substr_count($path, '/') < 2) {
+            return response()->json(['success' => false, 'message' => 'Refusing to delete: the path is too close to the filesystem root.'], 422);
+        }
+
+        $type = $request->input('type') === 'D' ? 'D' : 'F';
+        $cmd = $type === 'D'
+            ? 'rm -rf -- ' . $this->remoteQuote($path) . ' 2>/dev/null'
+            : 'rm -- ' . $this->remoteQuote($path) . ' 2>/dev/null';
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        [$rc] = $this->exploreRun($base, $cmd);
+
+        if ($rc !== 0) {
+            return response()->json(['success' => false, 'message' => 'Could not delete "' . basename($path) . '" — the server denied permission or the item no longer exists.']);
+        }
+        return response()->json(['success' => true, 'message' => 'Deleted "' . basename($path) . '" successfully']);
+    }
+
+    /**
+     * Change the permission (octal mode) of a file or folder — applied as
+     * ROOT via non-interactive sudo when the server allows it, so root-owned
+     * items can be fixed too. Refuses paths too close to the filesystem root
+     * (same guard as delete) so no top-level system directory can be chmod'ed.
+     */
+    public function exploreChmod(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'perms' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $path = rtrim($request->input('path'), '/');
+        $perms = trim($request->input('perms'));
+        if (!$this->validateExplorePath($path) || !preg_match('/^[0-7]{3,4}$/', $perms)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path or permission value requested'], 422);
+        }
+        if ($path === '/' || substr_count($path, '/') < 2) {
+            return response()->json(['success' => false, 'message' => 'Refusing to change permission: the path is too close to the filesystem root.'], 422);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        $cmd = 'chmod ' . $perms . ' -- ' . $this->remoteQuote($path)
+            . ' && stat -c "%a|%U|%G" ' . $this->remoteQuote($path) . ' 2>/dev/null';
+        [$rc, $out] = $this->exploreRun($base, $this->exploreAsRoot($cmd), 30);
+
+        if ($rc !== 0 || empty($out)) {
+            return response()->json(['success' => false, 'message' => 'Could not change the permission of "' . basename($path) . '" — the server denied the operation.']);
+        }
+        [$newPerms, $owner, $group] = array_pad(explode('|', trim($out[0]), 3), 3, '');
+        return response()->json([
+            'success' => true,
+            'message' => 'Permission of "' . basename($path) . '" changed to ' . $newPerms,
+            'perms' => $newPerms,
+            'owner' => $owner,
+            'group' => $group,
+        ]);
+    }
+
+    /**
+     * Duplicate (copy) a file within its directory under a new name.
+     * Non-destructive: the source is never modified and an existing target
+     * name is refused — nothing on the server is ever overwritten.
+     * Directories are intentionally not duplicated (a recursive copy of a
+     * huge tree could hammer the server's disk).
+     */
+    public function exploreDuplicate(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'new_name' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $path = rtrim($request->input('path'), '/');
+        $newName = trim($request->input('new_name'));
+        if (!$this->validateExplorePath($path) || !$this->validateExploreName($newName)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path or name requested'], 422);
+        }
+
+        $parent = dirname($path);
+        $target = ($parent === '/' ? '' : $parent) . '/' . $newName;
+        if (!$this->validateExplorePath($target)) {
+            return response()->json(['success' => false, 'message' => 'Invalid target path'], 422);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        $cmd = 'if [ -d ' . $this->remoteQuote($path) . ' ]; then echo __IS_DIR__; exit 3; fi; '
+            . 'if [ -e ' . $this->remoteQuote($target) . ' ]; then echo __TARGET_EXISTS__; exit 2; fi; '
+            . 'cp -p -- ' . $this->remoteQuote($path) . ' ' . $this->remoteQuote($target) . ' 2>/dev/null'
+            . ' && stat -c "%s|%Y" ' . $this->remoteQuote($target) . ' 2>/dev/null';
+        [$rc, $out] = $this->exploreRun($base, $this->exploreAsRoot($cmd), 60);
+
+        if ($rc !== 0) {
+            $first = !empty($out) ? trim($out[0]) : '';
+            if ($first === '__IS_DIR__') {
+                return response()->json(['success' => false, 'message' => 'Duplicate is only available for files, not folders.']);
+            }
+            if ($first === '__TARGET_EXISTS__') {
+                return response()->json(['success' => false, 'message' => 'A file named "' . $newName . '" already exists in this directory.']);
+            }
+            return response()->json(['success' => false, 'message' => 'Could not duplicate "' . basename($path) . '" — the server denied the operation.']);
+        }
+        [$sizeRaw, $mtimeRaw] = array_pad(explode('|', trim($out[0]), 2), 2, '');
+        return response()->json([
+            'success' => true,
+            'message' => 'Duplicated to "' . $newName . '" successfully',
+            'path' => $target,
+            'size' => (int) $sizeRaw,
+            'modified_ts' => $this->exploreTs($mtimeRaw),
+        ]);
+    }
+
+    /**
+     * Upload a file into the currently browsed directory. The bytes travel
+     * over the existing SSH channel via stdin (no scp/SFTP needed) and the
+     * write runs as root when sudo allows. Non-destructive: an existing
+     * file with the same name is never overwritten.
+     */
+    public function exploreUpload(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'upload' => 'required|file|max:10240',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $parent = rtrim($request->input('path'), '/');
+        if (!$this->validateExplorePath($parent)) {
+            return response()->json(['success' => false, 'message' => 'Invalid path requested'], 422);
+        }
+
+        $upload = $request->file('upload');
+        $name = basename((string) $upload->getClientOriginalName());
+        if (!$this->validateExploreName($name)) {
+            return response()->json(['success' => false, 'message' => 'Invalid file name: "' . $name . '"'], 422);
+        }
+        $target = ($parent === '/' ? '' : $parent) . '/' . $name;
+        if (!$this->validateExplorePath($target)) {
+            return response()->json(['success' => false, 'message' => 'Invalid upload path'], 422);
+        }
+
+        // Stage the bytes locally first so they can be piped via stdin
+        $tmp = tempnam(sys_get_temp_dir(), 'sshup_');
+        if ($tmp === false || !move_uploaded_file($upload->getRealPath(), $tmp)) {
+            @unlink($tmp);
+            return response()->json(['success' => false, 'message' => 'Could not stage the upload locally.']);
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        $cmd = 'if [ -e ' . $this->remoteQuote($target) . ' ]; then echo __TARGET_EXISTS__; exit 2; fi; '
+            . 'cat > ' . $this->remoteQuote($target) . ' 2>/dev/null'
+            . ' && chmod 644 -- ' . $this->remoteQuote($target) . ' 2>/dev/null'
+            . ' && stat -c "%s|%Y" ' . $this->remoteQuote($target) . ' 2>/dev/null';
+        $out = [];
+        exec('timeout 120 ' . $base . ' ' . escapeshellarg($this->exploreAsRoot($cmd)) . ' < ' . escapeshellarg($tmp) . ' 2>/dev/null', $out, $rc);
+        @unlink($tmp);
+
+        if ($rc !== 0 || empty($out)) {
+            if (!empty($out) && trim($out[0]) === '__TARGET_EXISTS__') {
+                return response()->json(['success' => false, 'message' => 'A file named "' . $name . '" already exists in this directory — rename it first. Nothing was overwritten.']);
+            }
+            return response()->json(['success' => false, 'message' => 'Could not upload "' . $name . '" — the server denied the write.']);
+        }
+        [$sizeRaw, $mtimeRaw] = array_pad(explode('|', trim($out[0]), 2), 2, '');
+        return response()->json([
+            'success' => true,
+            'message' => 'Uploaded "' . $name . '" (' . $this->formatBytes((int) $sizeRaw) . ') successfully',
+            'path' => $target,
+            'size' => (int) $sizeRaw,
+            'modified_ts' => $this->exploreTs($mtimeRaw),
+        ]);
+    }
+
+    public function exploreDownload(Request $request)
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        if (empty($p['host']) || empty($p['hostname']) || empty($p['username']) || empty($p['identity_file'])) {
+            abort(422, 'Missing server connection details');
+        }
+        if (!file_exists($p['identity_file'])) {
+            abort(422, 'Identity file not found');
+        }
+
+        $path = $request->input('path');
+        if (!$this->validateExplorePath($path)) abort(422, 'Invalid path requested');
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        $tmp = tempnam(sys_get_temp_dir(), 'sshfile_');
+        $remoteCmd = 'cat ' . $this->remoteQuote($path) . ' 2>/dev/null';
+        exec('timeout 300 ' . $base . ' ' . escapeshellarg($remoteCmd) . ' > ' . escapeshellarg($tmp) . ' 2>/dev/null', $output, $returnCode);
+
+        $size = @filesize($tmp);
+        if ($returnCode !== 0 || $size === false || $size <= 0) {
+            @unlink($tmp);
+            abort(500, 'Failed to download the file. It may not exist or is not readable.');
+        }
+
+        return response()->download($tmp, basename($path))->deleteFileAfterSend(true);
+    }
+
+    public function exploreZip(Request $request)
+    {
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'path' => 'required|string',
+            'port' => 'nullable|integer',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        if (empty($p['host']) || empty($p['hostname']) || empty($p['username']) || empty($p['identity_file'])) {
+            abort(422, 'Missing server connection details');
+        }
+        if (!file_exists($p['identity_file'])) {
+            abort(422, 'Identity file not found');
+        }
+
+        $path = $request->input('path');
+        if (!$this->validateExplorePath($path)) abort(422, 'Invalid path requested');
+
+        $parent = dirname($path);
+        $name = basename($path);
+        if ($name === '' || $parent === '' || $parent === '.') {
+            abort(422, 'Invalid directory requested');
+        }
+
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        $tmp = tempnam(sys_get_temp_dir(), 'sshzip_');
+
+        $zipCmd = 'cd ' . $this->remoteQuote($parent) . ' && zip -rq - ' . $this->remoteQuote($name) . ' 2>/dev/null';
+        exec('timeout 600 ' . $base . ' ' . escapeshellarg($zipCmd) . ' > ' . escapeshellarg($tmp) . ' 2>/dev/null', $output, $returnCode);
+
+        $usedTar = false;
+        $size = @filesize($tmp);
+        if ($returnCode !== 0 || $size === false || $size <= 0) {
+            // zip not installed / produced no output -> fall back to tar.gz
+            $tarCmd = 'cd ' . $this->remoteQuote($parent) . ' && tar -czf - ' . $this->remoteQuote($name) . ' 2>/dev/null';
+            exec('timeout 600 ' . $base . ' ' . escapeshellarg($tarCmd) . ' > ' . escapeshellarg($tmp) . ' 2>/dev/null', $output2, $returnCode2);
+            $size = @filesize($tmp);
+            if ($returnCode2 !== 0 || $size === false || $size <= 0) {
+                @unlink($tmp);
+                abort(500, 'Failed to create archive. Ensure the directory is readable, or install zip/tar on the server.');
+            }
+            $usedTar = true;
+        }
+
+        $filename = $name . ($usedTar ? '.tar.gz' : '.zip');
+        $contentType = $usedTar ? 'application/gzip' : 'application/zip';
+
+        return response()->download($tmp, $filename, ['Content-Type' => $contentType])->deleteFileAfterSend(true);
+    }
+
     /**
      * Test basic network connectivity to a host:port
      */

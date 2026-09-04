@@ -292,6 +292,7 @@ function renderServers(hosts) {
                         
                         <div class="server-actions">
                             <i class="bi bi-folder2-open icon-folder" title="Browse Projects" onclick='browseProjects("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
+                            <i class="bi bi-diagram-3 icon-explorer" title="Project Explorer (Browse Files & Folders)" onclick='openProjectExplorer("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port}, "/var/www")'></i>
                             <i class="bi bi-file-earmark-text icon-config" title="View Apache Config" onclick='viewApacheConfig("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
                             <i class="bi bi-heart-pulse icon-diagnose" title="Diagnose Connection" onclick="diagnoseServer('${host.host}', this)"></i>
                             ${vscodeDomainsHtml}
@@ -815,6 +816,609 @@ function openServerRootInVSCode() {
     } else {
         showToast('Server information not available', 'warning');
     }
+}
+
+// =========== PROJECT EXPLORER (File Browser) ===========
+let explorerState = {
+    host: '', hostname: '', user: '', identityFile: '', port: 22,
+    path: '/var/www', entries: [], previewFile: null, editFile: null
+};
+// Incremented on every open/navigate; stale async responses are ignored via this token
+let explorerRequestId = 0;
+
+function openProjectExplorer(host, hostname, user, identityFile, port, startPath) {
+    // Reset ALL state for the newly selected server FIRST
+    explorerState = {
+        host: host, hostname: hostname, user: user, identityFile: identityFile,
+        port: port || 22, path: startPath || '/var/www', entries: [], previewFile: null, editFile: null
+    };
+    explorerRequestId++; // invalidate any in-flight listing belonging to the previous server
+
+    // Close the file-preview modal if it was left open from the previous server
+    const previewModalEl = document.getElementById('sshFilePreviewModal');
+    if (previewModalEl && previewModalEl.classList.contains('show')) {
+        const inst = bootstrap.Modal.getInstance(previewModalEl);
+        if (inst) inst.hide();
+    }
+
+    // Close an open editor modal too — an unsaved buffer from the previous
+    // server must never be savable against the newly selected server's params
+    const editModalEl = document.getElementById('sshFileEditModal');
+    if (editModalEl && editModalEl.classList.contains('show')) {
+        const inst = bootstrap.Modal.getInstance(editModalEl);
+        if (inst) inst.hide();
+    }
+
+    // Clear every trace of the previously opened server's UI, then show loading
+    document.getElementById('explorerServerBadge').innerHTML = '<i class="bi bi-server me-1"></i> ' + host;
+    document.getElementById('explorerBreadcrumb').innerHTML = '';
+    document.getElementById('explorerEntries').innerHTML = '';
+    document.getElementById('explorerList').style.display = 'none';
+    document.getElementById('explorerEmpty').style.display = 'none';
+    const loadingEl = document.getElementById('explorerLoading');
+    loadingEl.innerHTML = '<div class="spinner-border text-primary" role="status"></div><p class="mt-3 mb-0 text-muted">Loading directory...</p>';
+    loadingEl.style.display = 'block';
+
+    const modal = new bootstrap.Modal(document.getElementById('sshExplorerModal'));
+    modal.show();
+    loadExplorerDirectory();
+}
+
+function explorerApiParams(path) {
+    const s = explorerState;
+    return {
+        host: s.host, hostname: s.hostname, username: s.user,
+        identity_file: s.identityFile, port: s.port, path: path || s.path
+    };
+}
+
+function joinExplorerPath(parent, name) {
+    return (parent || '/').replace(/\/+$/, '') + '/' + name;
+}
+
+function formatBytes(bytes) {
+    if (!bytes && bytes !== 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    let value = bytes;
+    while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+    return (i === 0 ? value : value.toFixed(2)) + ' ' + units[i];
+}
+
+/**
+ * Format a raw Unix epoch (seconds) in the VIEWER'S local timezone —
+ * same behaviour as standard file managers. Remote servers may run their
+ * OS clock in UTC or IST; the epoch is an absolute instant, so rendering
+ * it locally always shows the time the user expects (IST for us).
+ * Returns null when the timestamp is unknown.
+ */
+function formatExplorerTs(ts) {
+    if (ts === null || ts === undefined || ts <= 0) return null;
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return null;
+    const pad = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+        + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+async function loadExplorerDirectory() {
+    const requestId = ++explorerRequestId;
+    const loading = document.getElementById('explorerLoading');
+    const listEl = document.getElementById('explorerList');
+    const emptyEl = document.getElementById('explorerEmpty');
+    loading.style.display = 'block';
+    listEl.style.display = 'none';
+    emptyEl.style.display = 'none';
+    try {
+        const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 60000) : null;
+        const res = await fetch('/ssh/explorer/list', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+            body: JSON.stringify(explorerApiParams()),
+            signal: ctrl ? ctrl.signal : undefined
+        });
+        const data = await res.json();
+        if (timer) clearTimeout(timer);
+        // Ignore stale responses (e.g. user switched to another server mid-load)
+        if (requestId !== explorerRequestId) return;
+        if (!data.success) {
+            loading.style.display = 'none';
+            notyShow(data.message || 'Failed to load directory listing', 'error');
+            return;
+        }
+        explorerState.path = data.path || explorerState.path;
+        explorerState.entries = data.entries || [];
+        updateExplorerBreadcrumb();
+        renderExplorerList();
+        loading.style.display = 'none';
+    } catch (e) {
+        console.error('Explorer error:', e);
+        if (requestId !== explorerRequestId) return;
+        loading.style.display = 'none';
+        notyShow('Failed to load directory listing', 'error');
+    }
+}
+
+function renderExplorerList() {
+    const listEl = document.getElementById('explorerList');
+    const emptyEl = document.getElementById('explorerEmpty');
+    const entriesEl = document.getElementById('explorerEntries');
+
+    if (!explorerState.entries.length) {
+        listEl.style.display = 'none';
+        emptyEl.style.display = 'block';
+        return;
+    }
+    listEl.style.display = 'block';
+    emptyEl.style.display = 'none';
+    entriesEl.innerHTML = '';
+
+    explorerState.entries.forEach(entry => {
+        const fullPath = joinExplorerPath(explorerState.path, entry.name);
+        const row = document.createElement('div');
+        row.className = 'explorer-row' + (entry.is_dir ? ' explorer-dir' : '');
+        row.innerHTML = `
+            <div class="explorer-name" ${entry.is_dir ? `onclick="enterExplorerDirectory('${fullPath}')"` : ''}>
+                <i class="bi ${entry.is_dir ? 'bi-folder-fill text-warning' : 'bi-file-earmark text-secondary'}"></i>
+                <span>${escapeHtml(entry.name)}</span>
+            </div>
+            <div class="explorer-size" title="${entry.is_dir ? 'Directory size (total of all contents, computed with du)' : 'File size'}">${entry.is_dir ? (entry.dir_size != null ? formatBytes(entry.dir_size) : '—') : formatBytes(entry.size)}</div>
+            <div class="explorer-created" title="Created on (in your local timezone)">${escapeHtml(formatExplorerTs(entry.created_ts) || entry.created_at || 'N/A')}</div>
+            <div class="explorer-modified" title="Last modified (in your local timezone)">${escapeHtml(formatExplorerTs(entry.modified_ts) || entry.modified_at || 'N/A')}</div>
+            <div class="explorer-perm" title="Permission${entry.owner ? ' — owner ' + escapeHtml(entry.owner + (entry.group ? ':' + entry.group : '')) : ''} — click the shield icon to change"><span class="perm-badge">${escapeHtml(entry.perms || '—')}</span></div>
+            <div class="explorer-actions">
+                ${entry.is_dir
+                    ? `<i class="bi bi-arrow-clockwise icon-explorer-refresh" title="Refresh this directory" onclick="explorerGoTo('${fullPath}')"></i>
+                       <i class="bi bi-file-earmark-zip icon-explorer-zip" title="Zip this directory (all contents)" onclick="downloadDirectoryZip('${fullPath}')"></i>
+                       <i class="bi bi-input-cursor-text icon-explorer-rename" title="Rename this folder" onclick="renameExplorerEntry('${fullPath}')"></i>
+                       <i class="bi bi-shield-lock icon-explorer-perm" title="Change permission of this folder" onclick="openExplorerPermsModal('${fullPath}', '${escapeHtml(entry.perms || '')}', true)"></i>
+                       <i class="bi bi-trash icon-explorer-del" title="Delete this folder and everything inside it" onclick="deleteExplorerEntry('${fullPath}', true)"></i>`
+                    : `<i class="bi bi-eye icon-explorer-eye" title="Preview file content" onclick="openFilePreview('${fullPath}', '${escapeHtml(entry.name)}', ${entry.size})"></i>
+                       <i class="bi bi-pencil-square icon-explorer-edit" title="Edit file content" onclick="editExplorerFile('${fullPath}', ${entry.size})"></i>
+                       <i class="bi bi-download icon-explorer-dl" title="Download file" onclick="downloadFile('${fullPath}')"></i>
+                       <i class="bi bi-copy icon-explorer-dup" title="Duplicate this file (safe copy, never overwrites)" onclick="duplicateExplorerEntry('${fullPath}')"></i>
+                       <i class="bi bi-input-cursor-text icon-explorer-rename" title="Rename this file" onclick="renameExplorerEntry('${fullPath}')"></i>
+                       <i class="bi bi-shield-lock icon-explorer-perm" title="Change permission of this file" onclick="openExplorerPermsModal('${fullPath}', '${escapeHtml(entry.perms || '')}', false)"></i>
+                       <i class="bi bi-trash icon-explorer-del" title="Delete this file" onclick="deleteExplorerEntry('${fullPath}', false)"></i>`}
+            </div>
+        `;
+        entriesEl.appendChild(row);
+    });
+}
+
+function updateExplorerBreadcrumb() {
+    const el = document.getElementById('explorerBreadcrumb');
+    if (!el) return;
+    const parts = explorerState.path.split('/').filter(Boolean);
+    let acc = '';
+    let html = `<span class="crumb crumb-root" onclick="explorerGoTo('/')"><i class="bi bi-house-door"></i> /</span>`;
+    parts.forEach(p => {
+        acc += '/' + p;
+        html += `<span class="crumb-sep">/</span><span class="crumb" onclick="explorerGoTo('${acc}')">${escapeHtml(p)}</span>`;
+    });
+    el.innerHTML = html;
+}
+
+function explorerGoTo(path) {
+    explorerState.path = path || '/';
+    loadExplorerDirectory();
+}
+
+function enterExplorerDirectory(path) {
+    explorerState.path = path;
+    loadExplorerDirectory();
+}
+
+function explorerGoBack() {
+    const parts = explorerState.path.split('/').filter(Boolean);
+    parts.pop();
+    explorerState.path = '/' + parts.join('/');
+    loadExplorerDirectory();
+}
+
+function refreshExplorerDirectory() {
+    loadExplorerDirectory();
+}
+
+function downloadFile(filePath) {
+    const q = new URLSearchParams(explorerApiParams(filePath)).toString();
+    notyShow('Downloading file...', 'info', 2500);
+    window.location.href = '/ssh/explorer/download?' + q;
+}
+
+function downloadDirectoryZip(dirPath) {
+    const q = new URLSearchParams(explorerApiParams(dirPath)).toString();
+    notyShow('Preparing ZIP archive...', 'info', 4000);
+    window.location.href = '/ssh/explorer/zip?' + q;
+}
+
+// ---- File manager operations (edit / save / rename / create / delete) ----
+// Must mirror MAX_EDIT_BYTES (2 MB) in SshController.php — files above this
+// limit are refused for editing with an error Noty (server double-checks too)
+const EDIT_SIZE_LIMIT = 2 * 1024 * 1024;
+
+async function explorerJsonPost(url, body, timeoutMs) {
+    // AbortController guard: if the SSH round-trip ever stalls, the request
+    // is aborted after the timeout so buttons can never stay stuck on a
+    // spinner ("Saving...") forever.
+    const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs || 90000) : null;
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+            body: JSON.stringify(Object.assign(explorerApiParams(null), body || {})),
+            signal: ctrl ? ctrl.signal : undefined
+        });
+        return await res.json();
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+function explorerBasename(p) {
+    const parts = String(p || '').split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : String(p || '');
+}
+
+async function editExplorerFile(filePath, fileSize) {
+    const fileName = explorerBasename(filePath);
+    if (fileSize != null && fileSize > EDIT_SIZE_LIMIT) {
+        notyShow('Editing "' + fileName + '" (' + formatBytes(fileSize) + ') is not supported. Files above '
+            + formatBytes(EDIT_SIZE_LIMIT) + ' can freeze the browser.', 'error', 6000);
+        return;
+    }
+    notyShow('Opening editor for "' + fileName + '"...', 'info', 2000);
+    try {
+        const data = await explorerJsonPost('/ssh/explorer/edit', { path: filePath });
+        if (!data.success) {
+            notyShow(data.message || 'Unable to open this file for editing', 'error', 7000);
+            return;
+        }
+        explorerState.editFile = { path: data.path, modifiedTs: data.modified_ts != null ? data.modified_ts : null };
+        document.getElementById('editFileName').textContent = data.name;
+        document.getElementById('editFileSizeBadge').textContent = formatBytes(data.size);
+        document.getElementById('editContent').value = data.content;
+        new bootstrap.Modal(document.getElementById('sshFileEditModal')).show();
+    } catch (e) {
+        console.error('Edit open error:', e);
+        notyShow('Failed to open the file for editing', 'error');
+    }
+}
+
+async function saveExplorerFile() {
+    const f = explorerState.editFile;
+    if (!f) return;
+    const btn = document.getElementById('editSaveBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+    try {
+        const data = await explorerJsonPost('/ssh/explorer/save', {
+            path: f.path,
+            content: document.getElementById('editContent').value,
+            expected_mtime: f.modifiedTs
+        }, 120000);
+        if (!data.success) {
+            notyShow(data.message || 'Save failed — nothing was written', 'error', 8000);
+            return;
+        }
+        explorerState.editFile = null;
+        const m = bootstrap.Modal.getInstance(document.getElementById('sshFileEditModal'));
+        if (m) m.hide();
+        notyShow(data.message || 'File saved successfully', 'success');
+        loadExplorerDirectory(); // refresh listing so the Modified column updates
+    } catch (e) {
+        console.error('Save error:', e);
+        notyShow(e && e.name === 'AbortError'
+            ? 'Save timed out — the server did not respond in time. Nothing is lost: the editor stays open, try saving again.'
+            : 'Save failed due to a network error', 'error', 8000);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+    }
+}
+
+function renameExplorerEntry(filePath) {
+    const currentName = explorerBasename(filePath);
+    const newName = prompt('Rename "' + currentName + '" to:', currentName);
+    if (newName === null) return;
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === currentName) return;
+    if (trimmed.includes('/')) {
+        notyShow('The name cannot contain "/"', 'warning');
+        return;
+    }
+    explorerJsonPost('/ssh/explorer/rename', { path: filePath, new_name: trimmed })
+        .then(data => {
+            if (data.success) {
+                notyShow(data.message || 'Renamed successfully', 'success');
+                loadExplorerDirectory();
+            } else {
+                notyShow(data.message || 'Rename failed', 'error', 7000);
+            }
+        })
+        .catch(() => notyShow('Rename failed due to a network error', 'error'));
+}
+
+function createExplorerDirectory() {
+    const name = prompt('New folder name:', 'new-folder');
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (trimmed.includes('/')) {
+        notyShow('The folder name cannot contain "/"', 'warning');
+        return;
+    }
+    explorerJsonPost('/ssh/explorer/mkdir', { path: explorerState.path, name: trimmed })
+        .then(data => {
+            if (data.success) {
+                notyShow(data.message || 'Folder created', 'success');
+                loadExplorerDirectory();
+            } else {
+                notyShow(data.message || 'Could not create the folder', 'error', 7000);
+            }
+        })
+        .catch(() => notyShow('Could not create the folder (network error)', 'error'));
+}
+
+function createExplorerFile() {
+    const name = prompt('New file name:', 'new-file.txt');
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (trimmed.includes('/')) {
+        notyShow('The file name cannot contain "/"', 'warning');
+        return;
+    }
+    explorerJsonPost('/ssh/explorer/touch', { path: explorerState.path, name: trimmed })
+        .then(data => {
+            if (data.success) {
+                notyShow(data.message || 'File created', 'success');
+                loadExplorerDirectory();
+                // Jump straight into the editor for the brand-new file
+                if (data.path) editExplorerFile(data.path, 0);
+            } else {
+                notyShow(data.message || 'Could not create the file', 'error', 7000);
+            }
+        })
+        .catch(() => notyShow('Could not create the file (network error)', 'error'));
+}
+
+function deleteExplorerEntry(filePath, isDir) {
+    const name = explorerBasename(filePath);
+    const msg = isDir
+        ? 'Delete folder "' + name + '" and EVERYTHING inside it? This cannot be undone.'
+        : 'Delete file "' + name + '"? This cannot be undone.';
+    if (!confirm(msg)) return;
+    explorerJsonPost('/ssh/explorer/delete', { path: filePath, type: isDir ? 'D' : 'F' })
+        .then(data => {
+            if (data.success) {
+                notyShow(data.message || 'Deleted successfully', 'success');
+                loadExplorerDirectory();
+            } else {
+                notyShow(data.message || 'Delete failed', 'error', 7000);
+            }
+        })
+        .catch(() => notyShow('Delete failed due to a network error', 'error'));
+}
+
+// ---- Change permission (chmod) modal ----
+// Common octal presets; the current permission is pre-selected when it matches.
+const EXPLORER_PERM_PRESETS = [
+    { v: '777', d: 'rwx rwx rwx — everyone can read/write/execute (dangerous)' },
+    { v: '775', d: 'rwx rwx r-x — owner & group full, others read/enter' },
+    { v: '755', d: 'rwx r-x r-x — standard for folders & executable files' },
+    { v: '750', d: 'rwx r-x --- — owner & group only' },
+    { v: '700', d: 'rwx --- --- — owner only' },
+    { v: '664', d: 'rw- rw- r-- — owner & group write, others read' },
+    { v: '644', d: 'rw- r-- r-- — standard for regular files' },
+    { v: '640', d: 'rw- r-- --- — owner write, group read' },
+    { v: '600', d: 'rw- --- --- — owner read/write only (private)' },
+    { v: '555', d: 'r-x r-x r-x — read/enter only (read-only)' },
+    { v: '444', d: 'r-- r-- r-- — everyone read-only' },
+    { v: '400', d: 'r-- --- --- — owner read-only' }
+];
+
+function openExplorerPermsModal(path, currentPerms, isDir) {
+    document.getElementById('permsPath').value = path;
+    document.getElementById('permsFileName').textContent = explorerBasename(path);
+    document.getElementById('permsCurrentBadge').textContent = currentPerms || '—';
+    document.getElementById('permsTargetLabel').textContent = isDir ? 'this folder' : 'this file';
+    const listEl = document.getElementById('permsPresetList');
+    listEl.innerHTML = EXPLORER_PERM_PRESETS.map(p =>
+        '<label class="perms-preset-item">' +
+            '<input type="radio" name="permsPreset" value="' + p.v + '"' + (p.v === currentPerms ? ' checked' : '') + '>' +
+            '<span class="perms-octal">' + p.v + '</span>' +
+            '<span class="perms-desc">' + p.d + (p.v === currentPerms ? ' <strong>(current)</strong>' : '') + '</span>' +
+        '</label>'
+    ).join('');
+    document.getElementById('permsCustomInput').value = '';
+    new bootstrap.Modal(document.getElementById('sshPermsModal')).show();
+}
+
+async function applyExplorerPerms() {
+    const path = document.getElementById('permsPath').value;
+    const custom = document.getElementById('permsCustomInput').value.trim();
+    const checked = document.querySelector('input[name="permsPreset"]:checked');
+    const perms = custom || (checked ? checked.value : '');
+    if (!/^[0-7]{3,4}$/.test(perms)) {
+        notyShow('Enter a valid octal permission (e.g. 644 or 0755)', 'warning');
+        return;
+    }
+    const btn = document.getElementById('permsApplyBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying...';
+    try {
+        const data = await explorerJsonPost('/ssh/explorer/chmod', { path: path, perms: perms }, 60000);
+        if (!data.success) {
+            notyShow(data.message || 'Could not change the permission', 'error', 7000);
+            return;
+        }
+        const m = bootstrap.Modal.getInstance(document.getElementById('sshPermsModal'));
+        if (m) m.hide();
+        notyShow(data.message || 'Permission updated to ' + perms, 'success');
+        loadExplorerDirectory();
+    } catch (e) {
+        console.error('chmod error:', e);
+        notyShow(e && e.name === 'AbortError'
+            ? 'Permission change timed out — try again.'
+            : 'Permission change failed due to a network error', 'error', 7000);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+    }
+}
+
+// ---- Duplicate (safe copy) a file ----
+function duplicateExplorerEntry(filePath) {
+    const currentName = explorerBasename(filePath);
+    const dot = currentName.lastIndexOf('.');
+    const suggested = dot > 0 ? currentName.slice(0, dot) + '-copy' + currentName.slice(dot) : currentName + '-copy';
+    const newName = prompt('Duplicate "' + currentName + '" as:', suggested);
+    if (newName === null) return;
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === currentName) return;
+    if (trimmed.includes('/')) {
+        notyShow('The name cannot contain "/"', 'warning');
+        return;
+    }
+    explorerJsonPost('/ssh/explorer/duplicate', { path: filePath, new_name: trimmed }, 120000)
+        .then(data => {
+            if (data.success) {
+                notyShow(data.message || 'Duplicated successfully', 'success');
+                loadExplorerDirectory();
+            } else {
+                notyShow(data.message || 'Duplicate failed', 'error', 7000);
+            }
+        })
+        .catch(e => notyShow(e && e.name === 'AbortError'
+            ? 'Duplicate timed out — try again.'
+            : 'Duplicate failed due to a network error', 'error'));
+}
+
+// ---- Upload a file into the current directory ----
+const EXPLORER_UPLOAD_LIMIT = 10 * 1024 * 1024; // 10 MB — keep in sync with exploreUpload() validation
+
+async function uploadExplorerFile(input) {
+    const file = input.files && input.files[0];
+    input.value = ''; // allow re-selecting the same file later
+    if (!file) return;
+    if (file.size > EXPLORER_UPLOAD_LIMIT) {
+        notyShow('"' + file.name + '" (' + formatBytes(file.size) + ') exceeds the '
+            + formatBytes(EXPLORER_UPLOAD_LIMIT) + ' upload limit.', 'error', 7000);
+        return;
+    }
+    notyShow('Uploading "' + file.name + '"...', 'info', 3000);
+    const fd = new FormData();
+    const params = explorerApiParams(null);
+    Object.keys(params).forEach(k => fd.append(k, params[k]));
+    fd.append('upload', file);
+    try {
+        const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 120000) : null;
+        const res = await fetch('/ssh/explorer/upload', {
+            method: 'POST',
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+            body: fd,
+            signal: ctrl ? ctrl.signal : undefined
+        });
+        const data = await res.json();
+        if (timer) clearTimeout(timer);
+        if (!data.success) {
+            notyShow(data.message || 'Upload failed', 'error', 7000);
+            return;
+        }
+        notyShow(data.message || 'File uploaded successfully', 'success');
+        loadExplorerDirectory();
+    } catch (e) {
+        console.error('Upload error:', e);
+        notyShow(e && e.name === 'AbortError'
+            ? 'Upload timed out — try again.'
+            : 'Upload failed due to a network error', 'error', 7000);
+    }
+}
+
+// Tab key inserts 4 spaces inside the editor instead of moving focus
+(function bindExplorerEditTab() {
+    const ta = document.getElementById('editContent');
+    if (!ta || ta.dataset.tabBound) return;
+    ta.dataset.tabBound = '1';
+    ta.addEventListener('keydown', function (e) {
+        if (e.key !== 'Tab') return;
+        e.preventDefault();
+        const start = this.selectionStart, end = this.selectionEnd;
+        this.value = this.value.slice(0, start) + '    ' + this.value.slice(end);
+        this.selectionStart = this.selectionEnd = start + 4;
+    });
+})();
+
+// ---- File preview(with refresh + Chrome-safety guard) ----
+const PREVIEW_RENDER_LIMIT =25 * 1024 * 1024;
+
+async function openFilePreview(filePath, fileName, fileSize) {
+    if (fileSize > PREVIEW_RENDER_LIMIT) {
+        notyShow(
+            'Previewing "' + (fileName || 'file') + '" (' + formatBytes(fileSize) + ') may make Chrome unresponsive. Use the download icon instead.',
+            'error', 6000
+        );
+        return;
+    }
+    explorerState.previewFile = { path: filePath };
+    document.getElementById('previewFileName').textContent = fileName || 'File';
+    document.getElementById('previewFileSize').textContent = fileSize >= 0 ? formatBytes(fileSize) : '';
+    document.getElementById('previewSizeBadge').textContent = fileSize >= 0 ? formatBytes(fileSize) : '—';
+    document.getElementById('previewCreatedBadge').textContent = '…';
+    document.getElementById('previewModifiedBadge').textContent = '…';
+    document.getElementById('previewMeta').style.display = 'flex';
+    document.getElementById('previewLoading').style.display = 'block';
+    document.getElementById('previewContent').style.display = 'none';
+    const modal = new bootstrap.Modal(document.getElementById('sshFilePreviewModal'));
+    modal.show();
+    await fetchPreviewContent(false);
+}
+
+async function fetchPreviewContent(isRefresh) {
+    const p = explorerState.previewFile;
+    if (!p) return;
+    try {
+        const q = new URLSearchParams(explorerApiParams(p.path)).toString();
+        const res = await fetch('/ssh/explorer/file?' + q);
+        const data = await res.json();
+        if (!data.success) {
+            document.getElementById('previewLoading').style.display = 'none';
+            if (data.code === 'FILE_TOO_LARGE') {
+                notyShow(data.message || 'This file is too large to preview safely — it may make Chrome unresponsive. Use the download icon instead.', 'error', 6000);
+                const pv = bootstrap.Modal.getInstance(document.getElementById('sshFilePreviewModal'));
+                if (pv) pv.hide();
+            } else {
+                notyShow(data.message || 'Failed to load file content', 'error');
+            }
+            return;
+        }
+        const contentEl = document.getElementById('previewContent');
+        contentEl.textContent = data.content !== '' ? data.content : '(Empty file)';
+        document.getElementById('previewFileName').textContent = data.name;
+        document.getElementById('previewFileSize').textContent = formatBytes(data.size);
+document.getElementById('previewSizeBadge').textContent = formatBytes(data.size);
+        document.getElementById('previewCreatedBadge').textContent = formatExplorerTs(data.created_ts) || data.created_at || 'N/A';
+        document.getElementById('previewModifiedBadge').textContent = formatExplorerTs(data.modified_ts) || data.modified_at || 'N/A';
+        document.getElementById('previewMeta').style.display = 'flex';
+        document.getElementById('previewLoading').style.display = 'none';
+        contentEl.style.display = 'block';
+        if (isRefresh) notyShow('File content refreshed with the latest version', 'success');
+    } catch (e) {
+        console.error('Preview error:', e);
+        document.getElementById('previewLoading').style.display = 'none';
+        notyShow('Failed to load file content', 'error');
+    }
+}
+
+function refreshFilePreview() {
+    notyShow('Refreshing file content...', 'info', 2000);
+    fetchPreviewContent(true);
 }
 
 // NS Lookup Functions
@@ -2129,6 +2733,21 @@ function populateSshKeyFiles() {
 }
 
 // Helper function for toasts (assuming it exists or needs to be added)
+function notyShow(message, type = 'error', timeout = 4000) {
+    if (typeof Noty === 'function') {
+        new Noty({
+            type: type,
+            text: message,
+            layout: 'topRight',
+            timeout: timeout,
+            progressBar: true,
+            closeWith: ['click', 'button']
+        }).show();
+    } else {
+        showToast(message, type === 'error' ? 'danger' : (type === 'warning' ? 'warning' : 'info'));
+    }
+}
+
 function showToast(message, type) {
     // Simple toast implementation - you might want to use a proper toast library
     const toast = document.createElement('div');

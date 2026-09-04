@@ -4,6 +4,7 @@
 
 @section('styles')
 <link rel="stylesheet" href="{{ asset('assets/css/ssh.css') }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/noty@3.2.0-beta4/lib/noty.min.css">
 <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
 <style>
     .ssh-toolbar {
@@ -414,6 +415,176 @@
     </div>
 </div>
 
+<!-- SSH Project Explorer Modal (File Browser) -->
+<div class="modal fade" id="sshExplorerModal" tabindex="-1" data-bs-backdrop="static" aria-labelledby="sshExplorerModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content" style="border-radius: 20px; overflow: hidden; background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(248,250,252,0.96)); backdrop-filter: blur(10px);">
+            <div class="modal-header" style="background: linear-gradient(135deg, #0f766e 0%, #115e59 100%); border-bottom: none;">
+                <h5 class="modal-title text-white" id="sshExplorerModalLabel" style="white-space: nowrap;">
+                    <i class="bi bi-diagram-3 me-2"></i>Project Explorer
+                </h5>
+                <div class="badge bg-white text-dark px-3 py-2 ms-auto me-3" style="font-size: 0.85rem; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <span id="explorerServerBadge"><i class="bi bi-server me-1"></i>server</span>
+                </div>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <div class="explorer-topbar">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="explorerGoBack()" title="Go to parent directory">
+                        <i class="bi bi-arrow-left-circle"></i> Back
+                    </button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="refreshExplorerDirectory()" title="Refresh current directory">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                    </button>
+                    <button class="btn btn-sm btn-outline-success" onclick="createExplorerFile()" title="Create a new empty file in this directory">
+                        <i class="bi bi-file-earmark-plus"></i> New File
+                    </button>
+                    <button class="btn btn-sm btn-outline-success" onclick="createExplorerDirectory()" title="Create a new folder in this directory (as root, permission 755)">
+                        <i class="bi bi-folder-plus"></i> New Folder
+                    </button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="document.getElementById('explorerUploadInput').click()" title="Upload a file into this directory (never overwrites an existing file)">
+                        <i class="bi bi-cloud-arrow-up"></i> Upload
+                    </button>
+                    <input type="file" id="explorerUploadInput" style="display: none;" onchange="uploadExplorerFile(this)">
+                    <nav id="explorerBreadcrumb" class="explorer-breadcrumb"></nav>
+                </div>
+
+                <div id="explorerLoading" class="text-center py-5" style="display: none;">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <div class="mt-2 text-muted">Loading directory...</div>
+                </div>
+
+                <div id="explorerList" class="explorer-list" style="display: none;">
+                    <div class="explorer-list-head">
+                        <div><i class="bi bi-folder me-1"></i>Name</div>
+                        <div class="explorer-col-size text-center" title="File size — for directories, the total size of all contents (du)">Size</div>
+                        <div class="explorer-col-created text-center" title="Created on (when the filesystem provides it)">Created</div>
+                        <div class="explorer-col-modified text-center" title="Last modified">Modified</div>
+                        <div class="explorer-col-perm text-center" title="Permission (octal). Use the shield icon on a row to change it.">Perm</div>
+                        <div class="explorer-col-actions text-center">Actions</div>
+                    </div>
+                    <div id="explorerEntries"></div>
+                </div>
+
+                <div id="explorerEmpty" class="text-center py-5 text-muted" style="display: none;">
+                    <i class="bi bi-folder-x" style="font-size: 2.5rem;"></i>
+                    <p class="mt-2 mb-0">This directory is empty.</p>
+                </div>
+            </div>
+            <div class="modal-footer" style="border-top: 1px solid #e2e8f0; background: rgba(255,255,255,0.8);">
+                <button type="button" class="btn btn-success" onclick="downloadDirectoryZip(explorerState.path)" title="Download current directory and everything inside it as a ZIP archive">
+                    <i class="bi bi-file-earmark-zip me-1"></i>Zip Current Directory
+                </button>
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle me-1"></i>Close
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SSH File Preview Modal -->
+<div class="modal fade" id="sshFilePreviewModal" tabindex="-1" data-bs-backdrop="static" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content" style="border-radius: 20px; overflow: hidden;">
+            <div class="modal-header" style="background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); border-bottom: none;">
+                <h5 class="modal-title text-white text-truncate me-2" style="max-width: 45%;">
+                    <i class="bi bi-file-earmark-text me-2"></i><span id="previewFileName">File</span>
+                </h5>
+                <span class="badge bg-white text-dark ms-auto me-3 px-3 py-2" id="previewFileSize"></span>
+                <button class="btn btn-sm btn-light me-2" onclick="refreshFilePreview()" title="Fetch the latest file content from the server">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                </button>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-0" style="max-height: 72vh;">
+                <div class="preview-meta px-3 pt-3" id="previewMeta" style="display: none; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <span class="badge bg-light text-dark border px-3 py-2"><i class="bi bi-hdd me-1"></i>Size: <span id="previewSizeBadge">—</span></span>
+                    <span class="badge bg-light text-dark border px-3 py-2"><i class="bi bi-calendar-plus me-1"></i>Created: <span id="previewCreatedBadge">—</span></span>
+                    <span class="badge bg-light text-dark border px-3 py-2"><i class="bi bi-calendar-check me-1"></i>Modified: <span id="previewModifiedBadge">—</span></span>
+                </div>
+                <div id="previewLoading" class="text-center py-5" style="display: none;">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <div class="mt-2 text-muted">Loading file content...</div>
+                </div>
+                <pre id="previewContent" class="p-3 mb-0" style="display: none; margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 72vh; overflow: auto; font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 0.85rem; background: #0f172a; color: #e2e8f0; border-radius: 0;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle me-1"></i>Close
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SSH File Edit Modal -->
+<div class="modal fade" id="sshFileEditModal" tabindex="-1" data-bs-backdrop="static" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content" style="border-radius: 20px; overflow: hidden;">
+            <div class="modal-header" style="background: linear-gradient(135deg, #b45309 0%, #d97706 100%); border-bottom: none;">
+                <h5 class="modal-title text-white text-truncate me-2" style="max-width: 50%;">
+                    <i class="bi bi-pencil-square me-2"></i>Edit: <span id="editFileName">File</span>
+                </h5>
+                <span class="badge bg-white text-dark ms-auto me-3 px-3 py-2" id="editFileSizeBadge"></span>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-0">
+                <textarea id="editContent" class="explorer-edit-textarea" spellcheck="false" aria-label="File content editor"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle me-1"></i>Cancel
+                </button>
+                <button type="button" class="btn btn-warning" id="editSaveBtn" onclick="saveExplorerFile()" title="Write the edited content back to the server (saved as root via sudo)">
+                    <i class="bi bi-save me-1"></i>Save
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SSH Permission Change Modal (chmod) -->
+<div class="modal fade" id="sshPermsModal" tabindex="-1" data-bs-backdrop="static" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content" style="border-radius: 20px; overflow: hidden;">
+            <div class="modal-header" style="background: linear-gradient(135deg, #0e7490 0%, #0891b2 100%); border-bottom: none;">
+                <h5 class="modal-title text-white text-truncate me-2" style="max-width: 55%;">
+                    <i class="bi bi-shield-lock me-2"></i>Change Permission: <span id="permsFileName">File</span>
+                </h5>
+                <span class="badge bg-white text-dark ms-auto me-3 px-3 py-2" id="permsCurrentBadge" title="Current permission (octal)">—</span>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <input type="hidden" id="permsPath" value="">
+                <p class="text-muted small mb-3">
+                    Select a permission preset for <strong id="permsTargetLabel">this item</strong>, or type a custom octal value.
+                    Applied on the server as root via <code>sudo</code> (never overwrites or deletes anything).
+                </p>
+                <div id="permsPresetList" class="perms-preset-list"><!-- presets injected by JS --></div>
+                <div class="input-group mt-3">
+                    <span class="input-group-text" title="Custom octal permission"><i class="bi bi-123"></i></span>
+                    <input type="text" id="permsCustomInput" class="form-control" placeholder="Custom octal e.g. 644" maxlength="4" inputmode="numeric" autocomplete="off">
+                    <span class="input-group-text text-muted small">octal</span>
+                </div>
+                <div class="alert alert-light border mt-3 mb-0 small">
+                    <i class="bi bi-info-circle me-1"></i>
+                    <strong>r=4, w=2, x=1</strong> — e.g. <code>755</code> = owner rwx (4+2+1), group &amp; others r-x (4+1).
+                    Folders normally use <code>755</code>, regular files <code>644</code>.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle me-1"></i>Cancel
+                </button>
+                <button type="button" class="btn btn-success" id="permsApplyBtn" onclick="applyExplorerPerms()" title="Apply the selected permission on the server">
+                    <i class="bi bi-shield-check me-1"></i>Apply Permission
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @endsection
 
 @section('scripts')
@@ -422,5 +593,6 @@
 <script>
     const csrfToken = '{{ csrf_token() }}';
 </script>
+<script src="https://cdn.jsdelivr.net/npm/noty@3.2.0-beta4/lib/noty.min.js"></script>
 <script src="{{ asset('assets/js/ssh.js') }}"></script>
 @endsection

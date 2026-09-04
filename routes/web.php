@@ -108,6 +108,21 @@ Route::prefix('ssh')->group(function () {
     Route::post('/open-vscode', [SshController::class, 'openInVSCode'])->name('ssh.open-vscode');
     Route::post('/apache-config', [SshController::class, 'getApacheConfig'])->name('ssh.apache-config');
 
+    // Project Explorer (remote file browser)
+    Route::post('/explorer/list', [SshController::class, 'exploreDirectory'])->name('ssh.explorer.list');
+    Route::get('/explorer/file', [SshController::class, 'exploreFile'])->name('ssh.explorer.file');
+    Route::get('/explorer/download', [SshController::class, 'exploreDownload'])->name('ssh.explorer.download');
+    Route::get('/explorer/zip', [SshController::class, 'exploreZip'])->name('ssh.explorer.zip');
+    Route::post('/explorer/edit', [SshController::class, 'exploreEditRead'])->name('ssh.explorer.edit');
+    Route::post('/explorer/save', [SshController::class, 'exploreSave'])->name('ssh.explorer.save');
+    Route::post('/explorer/rename', [SshController::class, 'exploreRename'])->name('ssh.explorer.rename');
+    Route::post('/explorer/mkdir', [SshController::class, 'exploreMkdir'])->name('ssh.explorer.mkdir');
+    Route::post('/explorer/touch', [SshController::class, 'exploreTouch'])->name('ssh.explorer.touch');
+    Route::post('/explorer/delete', [SshController::class, 'exploreDelete'])->name('ssh.explorer.delete');
+    Route::post('/explorer/chmod', [SshController::class, 'exploreChmod'])->name('ssh.explorer.chmod');
+    Route::post('/explorer/duplicate', [SshController::class, 'exploreDuplicate'])->name('ssh.explorer.duplicate');
+    Route::post('/explorer/upload', [SshController::class, 'exploreUpload'])->name('ssh.explorer.upload');
+
     Route::get('/available-keys', [SshController::class, 'getAvailableKeys']);
     Route::post('/upload-key', [SshController::class, 'uploadPemKey']);
     Route::post('/toggle-favorite', [SshController::class, 'toggleFavorite']);
