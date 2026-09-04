@@ -2209,3 +2209,107 @@ html {
     line-height: 1.5;
     tab-size: 4;
 }
+
+/* ========== SSL INSTALL (icon, modal inputs, step console) ========== */
+.icon-ssl {
+    color: #059669;
+    background: #ecfdf5;
+    border-color: #6ee7b7;
+}
+
+.icon-ssl:hover {
+    color: #047857;
+    background: #d1fae5;
+    text-shadow: 0 0 8px rgba(5, 150, 105, 0.35);
+}
+
+.ssl-type-tabs .nav-link {
+    border-radius: 12px;
+    font-weight: 600;
+    color: #475569;
+}
+
+.ssl-type-tabs .nav-link.active {
+    background: linear-gradient(135deg, #059669, #10b981);
+    color: #fff;
+}
+
+.ssl-input-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 14px;
+    background: #f8fafc;
+}
+
+.ssl-step {
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #94a3b8;
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    background: #f8fafc;
+}
+
+.ssl-step-ok { border-left-color: #10b981; background: #f0fdf4; }
+.ssl-step-error { border-left-color: #ef4444; background: #fef2f2; }
+.ssl-step-running { border-left-color: #f59e0b; background: #fffbeb; }
+
+.ssl-step-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #334155;
+}
+
+.ssl-step-output {
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 8px;
+    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.78rem;
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ========== SSL DIRECTORY PICKER (server-side browse) ========== */
+#sslDirPickerModal { z-index: 1070; }
+body.ssl-picker-open .modal-backdrop { z-index: 1065; }
+
+.ssl-dir-list {
+    max-height: 320px;
+    overflow-y: auto;
+    background: #fff;
+}
+
+.ssl-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    cursor: pointer;
+    border-bottom: 1px solid #f1f5f9;
+    transition: background 0.15s ease;
+}
+
+.ssl-dir-row:last-child { border-bottom: none; }
+.ssl-dir-row:hover { background: #ecfdf5; }
+.ssl-dir-row i.bi-folder-fill { color: #f59e0b; font-size: 1rem; flex-shrink: 0; }
+.ssl-dir-name { font-size: 0.88rem; color: #334155; word-break: break-all; }
+.ssl-dir-go { color: #cbd5e1; font-size: 0.8rem; }
+.ssl-dir-row:hover .ssl-dir-go { color: #059669; }
+
+.ssl-dir-crumb {
+    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.78rem;
+    min-height: 38px;
+    height: auto;
+    line-height: 1.9;
+    word-break: break-all;
+}
+
+.ssl-dir-crumb-seg { color: #059669; font-weight: 600; text-decoration: none; }
+.ssl-dir-crumb-seg:hover { text-decoration: underline; color: #047857; }
+.ssl-dir-crumb-sep { color: #94a3b8; }

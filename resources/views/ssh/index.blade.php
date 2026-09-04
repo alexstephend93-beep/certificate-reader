@@ -585,6 +585,158 @@
     </div>
 </div>
 
+<!-- SSL Install Modal -->
+<div class="modal fade" id="sslInstallModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="true" aria-labelledby="sslInstallModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+        <div class="modal-content" style="border-radius: 20px; overflow: hidden;">
+            <div class="modal-header" style="background: linear-gradient(135deg, #065f46 0%, #059669 100%); border-bottom: none;">
+                <h5 class="modal-title text-white">
+                    <i class="bi bi-patch-check-fill me-2"></i>Install SSL — <span id="sslServerLabel">Server</span>
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" style="padding: 24px 30px;">
+                <ul class="nav nav-pills mb-4 ssl-type-tabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="sslTabFree" data-bs-toggle="pill" data-bs-target="#sslPaneFree" type="button" role="tab"><i class="bi bi-unlock-fill me-1"></i> Let's Encrypt (Free)</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="sslTabPaid" data-bs-toggle="pill" data-bs-target="#sslPanePaid" type="button" role="tab"><i class="bi bi-shield-lock-fill me-1"></i> Paid SSL</button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <!-- Let's Encrypt (free) -->
+                    <div class="tab-pane fade show active" id="sslPaneFree" role="tabpanel">
+                        <div class="alert alert-info small d-flex align-items-start mb-3">
+                            <i class="bi bi-info-circle me-2 mt-1"></i>
+                            <div>Installs a free Let's Encrypt certificate with <code>certbot --apache</code> (registered without email). The domain's DNS A record is verified against the server's public IP first — the installation aborts if the domain is not pointed to this server.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="sslLeDomain">Domain Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="sslLeDomain" placeholder="e.g. prodtech.iconicaddons.com" autocomplete="off" spellcheck="false">
+                            <small class="text-muted">Exact domain only — no http/https, no www.</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="sslLeDocroot"><i class="bi bi-folder2-open me-1"></i>Project Directory (DocumentRoot) <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="sslLeDocroot" placeholder="/var/www/your-project/public" autocomplete="off" spellcheck="false">
+                                <button type="button" class="btn btn-outline-success" title="Browse directories on the server" onclick="openSslDirPicker('sslLeDocroot')"><i class="bi bi-folder2-open"></i><span class="ms-1 d-none d-sm-inline">Browse</span></button>
+                            </div>
+                            <small class="text-muted">Click <strong>Browse</strong> to pick a folder from the server, or type the absolute path — used as DocumentRoot &amp; &lt;Directory&gt; when the VirtualHost is created.</small>
+                        </div>
+                        <button type="button" class="btn btn-success w-100" id="sslLeSubmitBtn" onclick="submitLetsEncryptSsl()">
+                            <i class="bi bi-shield-check me-1"></i>Verify DNS &amp; Install Let's Encrypt SSL
+                        </button>
+                    </div>
+                    <!-- Paid SSL -->
+                    <div class="tab-pane fade" id="sslPanePaid" role="tabpanel">
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="sslPaidDomain">Domain Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="sslPaidDomain" placeholder="e.g. uatpayout.wegofin.com" autocomplete="off" spellcheck="false">
+                            <small class="text-muted">Exact domain the certificate was issued for.</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label fw-bold" for="sslPaidDocroot"><i class="bi bi-folder2-open me-1"></i>Project Directory (DocumentRoot) <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="sslPaidDocroot" placeholder="/var/www/your-project/public" autocomplete="off" spellcheck="false">
+                                <button type="button" class="btn btn-outline-success" title="Browse directories on the server" onclick="openSslDirPicker('sslPaidDocroot')"><i class="bi bi-folder2-open"></i><span class="ms-1 d-none d-sm-inline">Browse</span></button>
+                            </div>
+                            <small class="text-muted">Click <strong>Browse</strong> to pick a folder from the server, or type the absolute path — used as DocumentRoot &amp; &lt;Directory&gt; in the new SSL VirtualHost.</small>
+                        </div>
+
+                        <div class="ssl-input-card mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label fw-bold mb-0">Public Certificate <span class="text-danger">*</span></label>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button type="button" class="btn btn-outline-secondary active" id="sslCertModeFileBtn" onclick="setSslInputMode('cert', 'file')"><i class="bi bi-upload me-1"></i>File</button>
+                                    <button type="button" class="btn btn-outline-secondary" id="sslCertModeTextBtn" onclick="setSslInputMode('cert', 'text')"><i class="bi bi-code-square me-1"></i>Paste</button>
+                                </div>
+                            </div>
+                            <input type="file" class="form-control form-control-sm" id="sslCertFile" accept=".crt,.pem,.cer,.csr">
+                            <textarea class="form-control form-control-sm font-monospace" id="sslCertText" rows="5" style="display:none;" placeholder="-----BEGIN CERTIFICATE-----&#10;MIIF...&#10;-----END CERTIFICATE-----" spellcheck="false"></textarea>
+                        </div>
+
+                        <div class="ssl-input-card mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label fw-bold mb-0">Private Key <span class="text-danger">*</span></label>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button type="button" class="btn btn-outline-secondary active" id="sslKeyModeFileBtn" onclick="setSslInputMode('key', 'file')"><i class="bi bi-upload me-1"></i>File</button>
+                                    <button type="button" class="btn btn-outline-secondary" id="sslKeyModeTextBtn" onclick="setSslInputMode('key', 'text')"><i class="bi bi-code-square me-1"></i>Paste</button>
+                                </div>
+                            </div>
+                            <input type="file" class="form-control form-control-sm" id="sslKeyFile" accept=".key,.pem,.txt">
+                            <textarea class="form-control form-control-sm font-monospace" id="sslKeyText" rows="5" style="display:none;" placeholder="-----BEGIN PRIVATE KEY-----&#10;MIIEv...&#10;-----END PRIVATE KEY-----" spellcheck="false"></textarea>
+                        </div>
+
+                        <div class="ssl-input-card mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label class="form-label fw-bold mb-0">Chain / CA Bundle <small class="text-muted fw-normal">(optional)</small></label>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button type="button" class="btn btn-outline-secondary active" id="sslChainModeFileBtn" onclick="setSslInputMode('chain', 'file')"><i class="bi bi-upload me-1"></i>File</button>
+                                    <button type="button" class="btn btn-outline-secondary" id="sslChainModeTextBtn" onclick="setSslInputMode('chain', 'text')"><i class="bi bi-code-square me-1"></i>Paste</button>
+                                </div>
+                            </div>
+                            <input type="file" class="form-control form-control-sm" id="sslChainFile" accept=".crt,.pem,.cer,.bundle">
+                            <textarea class="form-control form-control-sm font-monospace" id="sslChainText" rows="4" style="display:none;" placeholder="-----BEGIN CERTIFICATE-----&#10;...intermediate(s)...&#10;-----END CERTIFICATE-----" spellcheck="false"></textarea>
+                        </div>
+
+                        <button type="button" class="btn btn-success w-100" id="sslPaidSubmitBtn" onclick="submitPaidSsl()">
+                            <i class="bi bi-shield-lock me-1"></i>Verify Key Pair &amp; Install Paid SSL
+                        </button>
+                    </div>
+                </div>
+
+                <div id="sslInstallProgress" class="mt-3" style="display:none;">
+                    <div class="d-flex align-items-center text-primary small">
+                        <span class="spinner-border spinner-border-sm me-2"></span>
+                        <span>Working on the server — this can take a few minutes for Let's Encrypt…</span>
+                    </div>
+                </div>
+                <div id="sslInstallOutput" class="mt-3" style="display:none;"></div>
+            </div>
+            <div class="modal-footer" style="border-top: 1px solid #e2e8f0;">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal"><i class="bi bi-x-circle me-1"></i>Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SSL Directory Picker Modal (server-side browse) -->
+<div class="modal fade" id="sslDirPickerModal" tabindex="-1" data-bs-backdrop="static" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content" style="border-radius: 20px; overflow: hidden;">
+            <div class="modal-header py-3" style="background: linear-gradient(135deg, #065f46 0%, #059669 100%); border-bottom: none;">
+                <h5 class="modal-title text-white fs-6">
+                    <i class="bi bi-folder2-open me-2"></i>Select Project Directory — <span id="sslDirPickerServer"></span>
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-3">
+                <div class="d-flex align-items-center gap-2 mb-2">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Up one level" onclick="loadSslDirPicker(upSslDirPath())"><i class="bi bi-arrow-up"></i></button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Go to /var/www" onclick="loadSslDirPicker('/var/www')"><i class="bi bi-house-door"></i></button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Filesystem root /" onclick="loadSslDirPicker('/')"><i class="bi bi-hdd"></i></button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Refresh" onclick="loadSslDirPicker()"><i class="bi bi-arrow-clockwise"></i></button>
+                </div>
+                <div class="ssl-dir-crumb form-control bg-light text-truncate mb-2" id="sslDirCrumb"></div>
+                <div id="sslDirList" class="ssl-dir-list border rounded">
+                    <div class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading directories…</div>
+                </div>
+                <div class="alert alert-light border small mt-2 mb-0 d-flex align-items-center">
+                    <i class="bi bi-info-circle me-2"></i>
+                    <div>Click a folder to open it, then press <strong>Select This Directory</strong> to use the current folder as the DocumentRoot.</div>
+                </div>
+            </div>
+            <div class="modal-footer py-2">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="confirmSslDirPick()"><i class="bi bi-check2-circle me-1"></i>Select This Directory</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @endsection
 
 @section('scripts')

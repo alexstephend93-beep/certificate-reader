@@ -294,6 +294,7 @@ function renderServers(hosts) {
                             <i class="bi bi-folder2-open icon-folder" title="Browse Projects" onclick='browseProjects("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
                             <i class="bi bi-diagram-3 icon-explorer" title="Project Explorer (Browse Files & Folders)" onclick='openProjectExplorer("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port}, "/var/www")'></i>
                             <i class="bi bi-file-earmark-text icon-config" title="View Apache Config" onclick='viewApacheConfig("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
+                            <i class="bi bi-patch-check-fill icon-ssl" title="Install SSL Certificate (Let's Encrypt / Paid)" onclick='openSslInstallModal("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
                             <i class="bi bi-heart-pulse icon-diagnose" title="Diagnose Connection" onclick="diagnoseServer('${host.host}', this)"></i>
                             ${vscodeDomainsHtml}
                              <i class="bi bi-clipboard2-check icon-copy" title="Copy SSH command" onclick='copySshCommand("${host.host}")'></i>
@@ -2898,3 +2899,324 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 });
+
+/* ============================================================
+ * SSL INSTALLATION (Let's Encrypt / Paid SSL)
+ * ============================================================ */
+let sslContext = { host: '', hostname: '', user: '', identityFile: '', port: 22 };
+let sslModalInstance = null;
+
+function openSslInstallModal(host, hostname, user, identityFile, port) {
+    sslContext = { host: host, hostname: hostname, user: user, identityFile: identityFile, port: port || 22 };
+    document.getElementById('sslServerLabel').textContent = hostname || host;
+    resetSslInstallForm();
+    const modalEl = document.getElementById('sslInstallModal');
+    sslModalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
+    sslModalInstance.show();
+}
+
+function resetSslInstallForm() {
+    document.getElementById('sslLeDomain').value = '';
+    document.getElementById('sslLeDocroot').value = '';
+    document.getElementById('sslPaidDomain').value = '';
+    document.getElementById('sslPaidDocroot').value = '';
+    ['cert', 'key', 'chain'].forEach(f => {
+        const cap = f.charAt(0).toUpperCase() + f.slice(1);
+        const fileEl = document.getElementById('ssl' + cap + 'File');
+        const textEl = document.getElementById('ssl' + cap + 'Text');
+        if (fileEl) fileEl.value = '';
+        if (textEl) textEl.value = '';
+        setSslInputMode(f, 'file');
+    });
+    // Always start on the Let's Encrypt tab
+    new bootstrap.Tab(document.getElementById('sslTabFree')).show();
+    hideSslOutput();
+    setSslBusy(false);
+}
+
+function setSslInputMode(field, mode) {
+    const cap = field.charAt(0).toUpperCase() + field.slice(1);
+    const fileEl = document.getElementById('ssl' + cap + 'File');
+    const textEl = document.getElementById('ssl' + cap + 'Text');
+    const fileBtn = document.getElementById('ssl' + cap + 'ModeFileBtn');
+    const textBtn = document.getElementById('ssl' + cap + 'ModeTextBtn');
+    if (!fileEl || !textEl || !fileBtn || !textBtn) return;
+    const isFile = mode === 'file';
+    fileEl.style.display = isFile ? '' : 'none';
+    textEl.style.display = isFile ? 'none' : '';
+    fileBtn.classList.toggle('active', isFile);
+    textBtn.classList.toggle('active', !isFile);
+}
+
+async function readSslField(field) {
+    const cap = field.charAt(0).toUpperCase() + field.slice(1);
+    const fileEl = document.getElementById('ssl' + cap + 'File');
+    const textEl = document.getElementById('ssl' + cap + 'Text');
+    const isFile = fileEl.style.display !== 'none';
+    if (isFile) {
+        if (!fileEl.files || !fileEl.files[0]) return null;
+        return await fileEl.files[0].text();
+    }
+    const t = (textEl.value || '').trim();
+    return t === '' ? null : t;
+}
+
+function showSslOutput() {
+    document.getElementById('sslInstallOutput').style.display = 'block';
+}
+
+function hideSslOutput() {
+    const el = document.getElementById('sslInstallOutput');
+    el.style.display = 'none';
+    el.innerHTML = '';
+}
+
+function setSslBusy(busy) {
+    const le = document.getElementById('sslLeSubmitBtn');
+    const paid = document.getElementById('sslPaidSubmitBtn');
+    if (le) le.disabled = busy;
+    if (paid) paid.disabled = busy;
+    document.getElementById('sslInstallProgress').style.display = busy ? 'block' : 'none';
+}
+
+function renderSslSteps(steps) {
+    const icons = {
+        ok: 'bi-check-circle-fill text-success',
+        error: 'bi-x-circle-fill text-danger',
+        running: 'bi-hourglass-split text-warning',
+        info: 'bi-info-circle text-primary'
+    };
+    showSslOutput();
+    const box = document.getElementById('sslInstallOutput');
+    box.innerHTML = '<div class="ssl-steps">' + steps.map(s => `
+        <div class="ssl-step ssl-step-${escapeHtml(s.status)}">
+            <div class="ssl-step-title"><i class="bi ${icons[s.status] || icons.info} me-2"></i>${escapeHtml(s.name)}</div>
+            ${s.output ? `<pre class="ssl-step-output">${escapeHtml(s.output)}</pre>` : ''}
+        </div>`).join('') + '</div>';
+}
+
+function normalizeSslDocroot(path) {
+    if (!path) return null;
+    const p = path.replace(/\/+$/, '');
+    if (!p.startsWith('/') || p.includes('..') || /\s/.test(p) || !/^\/[A-Za-z0-9._\-]+(\/[A-Za-z0-9._\-]+)*$/.test(p)) return null;
+    return p;
+}
+
+/* ---------- SSL directory picker (browse the server's folders) ---------- */
+let sslDirPicker = { target: null, path: '/var/www' };
+let sslDirPickerModalInstance = null;
+
+function openSslDirPicker(targetId) {
+    if (!sslContext.host) {
+        showToast('Open the SSL modal for a server first', 'warning');
+        return;
+    }
+    sslDirPicker.target = targetId;
+    const current = normalizeSslDocroot((document.getElementById(targetId).value || '').trim());
+    sslDirPicker.path = current || '/var/www';
+    document.getElementById('sslDirPickerServer').textContent = sslContext.hostname || sslContext.host;
+
+    const modalEl = document.getElementById('sslDirPickerModal');
+    if (!modalEl.dataset.pickerBound) {
+        modalEl.dataset.pickerBound = '1';
+        modalEl.addEventListener('show.bs.modal', () => document.body.classList.add('ssl-picker-open'));
+        modalEl.addEventListener('hidden.bs.modal', () => document.body.classList.remove('ssl-picker-open'));
+    }
+    if (!sslDirPickerModalInstance) {
+        sslDirPickerModalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
+    }
+    sslDirPickerModalInstance.show();
+    loadSslDirPicker();
+}
+
+function loadSslDirPicker(path) {
+    if (typeof path === 'string' && path) sslDirPicker.path = path;
+    const listEl = document.getElementById('sslDirList');
+    renderSslDirCrumb();
+    listEl.innerHTML = '<div class="text-center py-4 text-muted small"><span class="spinner-border spinner-border-sm me-2"></span>Loading directories…</div>';
+
+    fetch('/ssh/explorer/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+        body: JSON.stringify({
+            host: sslContext.host,
+            hostname: sslContext.hostname,
+            username: sslContext.user,
+            identity_file: sslContext.identityFile,
+            port: sslContext.port,
+            path: sslDirPicker.path
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) throw new Error(data.message || 'Unable to read the directory');
+        if (data.path) sslDirPicker.path = data.path;
+        renderSslDirCrumb();
+        renderSslDirList(data.entries || []);
+    })
+    .catch(err => {
+        listEl.innerHTML = '<div class="text-center py-4 text-danger small"><i class="bi bi-x-circle me-2"></i>' + escapeHtml(err.message || 'Failed to list the directory') + '</div>';
+    });
+}
+
+function renderSslDirList(entries) {
+    const listEl = document.getElementById('sslDirList');
+    const dirs = (entries || []).filter(e => e.is_dir);
+    if (!dirs.length) {
+        listEl.innerHTML = '<div class="text-center py-4 text-muted small"><i class="bi bi-folder2 me-2"></i>No subdirectories in this folder.</div>';
+        return;
+    }
+    listEl.innerHTML = dirs.map(d => {
+        const full = joinSslDirPath(sslDirPicker.path, d.name);
+        return '<div class="ssl-dir-row" data-path="' + escapeHtml(full) + '" title="' + escapeHtml(full) + '">' +
+            '<i class="bi bi-folder-fill"></i>' +
+            '<span class="ssl-dir-name">' + escapeHtml(d.name) + '</span>' +
+            '<i class="bi bi-chevron-right ms-auto ssl-dir-go"></i>' +
+        '</div>';
+    }).join('');
+    listEl.querySelectorAll('.ssl-dir-row').forEach(row => {
+        row.addEventListener('click', () => loadSslDirPicker(row.dataset.path));
+    });
+}
+
+function joinSslDirPath(base, name) {
+    return base === '/' ? '/' + name : base.replace(/\/+$/, '') + '/' + name;
+}
+
+function upSslDirPath() {
+    const p = (sslDirPicker.path || '/').replace(/\/+$/, '');
+    const idx = p.lastIndexOf('/');
+    return idx <= 0 ? '/' : p.slice(0, idx);
+}
+
+function renderSslDirCrumb() {
+    const crumb = document.getElementById('sslDirCrumb');
+    if (!crumb) return;
+    crumb.innerHTML = '';
+    crumb.title = sslDirPicker.path;
+    const addSeg = (label, path) => {
+        const a = document.createElement('a');
+        a.href = '#';
+        a.textContent = label;
+        a.className = 'ssl-dir-crumb-seg';
+        a.addEventListener('click', ev => { ev.preventDefault(); loadSslDirPicker(path); });
+        crumb.appendChild(a);
+    };
+    addSeg('/', '/');
+    let acc = '';
+    sslDirPicker.path.split('/').forEach(seg => {
+        if (!seg) return;
+        acc += '/' + seg;
+        const sep = document.createElement('span');
+        sep.className = 'ssl-dir-crumb-sep';
+        sep.textContent = ' / ';
+        crumb.appendChild(sep);
+        addSeg(seg, acc);
+    });
+}
+
+function confirmSslDirPick() {
+    if (!sslDirPicker.target) return;
+    document.getElementById(sslDirPicker.target).value = sslDirPicker.path;
+    if (sslDirPickerModalInstance) sslDirPickerModalInstance.hide();
+    showToast('Directory selected: ' + sslDirPicker.path, 'success');
+}
+
+async function submitLetsEncryptSsl() {
+    const domain = (document.getElementById('sslLeDomain').value || '').trim();
+    if (!domain) {
+        showToast('Please enter a domain name', 'warning');
+        return;
+    }
+    const docroot = normalizeSslDocroot((document.getElementById('sslLeDocroot').value || '').trim());
+    if (!docroot) {
+        showToast('Please enter a valid absolute directory path (e.g. /var/www/your-project/public)', 'warning');
+        return;
+    }
+    if (!confirm(`Install a free Let's Encrypt SSL for "${domain}"?\n\nDirectory: ${docroot}\n\nThe DNS A record of the domain will be verified against this server's public IP first.`)) {
+        return;
+    }
+
+    hideSslOutput();
+    setSslBusy(true);
+    try {
+        const res = await fetch('/ssh/ssl/install-letsencrypt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+            body: JSON.stringify({
+                host: sslContext.host,
+                hostname: sslContext.hostname,
+                username: sslContext.user,
+                identity_file: sslContext.identityFile,
+                port: sslContext.port,
+                domain: domain,
+                docroot: docroot
+            })
+        });
+        const data = await res.json();
+        if (data.steps) renderSslSteps(data.steps);
+        showToast(data.message || (data.success ? "Let's Encrypt SSL installed successfully" : 'SSL installation failed'), data.success ? 'success' : 'danger');
+    } catch (e) {
+        console.error("Let's Encrypt SSL error:", e);
+        showToast('Request failed: ' + e.message, 'danger');
+    } finally {
+        setSslBusy(false);
+    }
+}
+
+async function submitPaidSsl() {
+    const domain = (document.getElementById('sslPaidDomain').value || '').trim();
+    if (!domain) {
+        showToast('Please enter a domain name', 'warning');
+        return;
+    }
+    const docroot = normalizeSslDocroot((document.getElementById('sslPaidDocroot').value || '').trim());
+    if (!docroot) {
+        showToast('Please enter a valid absolute directory path (e.g. /var/www/your-project/public)', 'warning');
+        return;
+    }
+
+    const cert = await readSslField('cert');
+    const key = await readSslField('key');
+    const chain = await readSslField('chain');
+
+    if (!cert) { showToast('Public certificate is required (upload a file or paste the text)', 'warning'); return; }
+    if (!key) { showToast('Private key is required (upload a file or paste the text)', 'warning'); return; }
+    if (!cert.includes('BEGIN CERTIFICATE')) { showToast('The public certificate does not look like a PEM certificate', 'danger'); return; }
+    if (!key.includes('PRIVATE KEY')) { showToast('The private key does not look like a PEM private key', 'danger'); return; }
+
+    if (!confirm(`Install the paid SSL for "${domain}"?\n\nDirectory: ${docroot}\n\nThe certificate/key pair is verified first — nothing is uploaded if they do not match.`)) {
+        return;
+    }
+
+    hideSslOutput();
+    setSslBusy(true);
+    try {
+        const fd = new FormData();
+        fd.append('host', sslContext.host);
+        fd.append('hostname', sslContext.hostname);
+        fd.append('username', sslContext.user);
+        fd.append('identity_file', sslContext.identityFile);
+        fd.append('port', sslContext.port);
+        fd.append('domain', domain);
+        fd.append('docroot', docroot);
+        // Files are read client-side and sent as text
+        fd.append('cert_text', cert);
+        fd.append('key_text', key);
+        if (chain) fd.append('chain_text', chain);
+
+        const res = await fetch('/ssh/ssl/install-paid', {
+            method: 'POST',
+            headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': csrfToken },
+            body: fd
+        });
+        const data = await res.json();
+        if (data.steps) renderSslSteps(data.steps);
+        showToast(data.message || (data.success ? 'Paid SSL installed successfully' : 'Paid SSL installation failed'), data.success ? 'success' : 'danger');
+    } catch (e) {
+        console.error('Paid SSL error:', e);
+        showToast('Request failed: ' + e.message, 'danger');
+    } finally {
+        setSslBusy(false);
+    }
+}

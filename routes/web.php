@@ -108,6 +108,10 @@ Route::prefix('ssh')->group(function () {
     Route::post('/open-vscode', [SshController::class, 'openInVSCode'])->name('ssh.open-vscode');
     Route::post('/apache-config', [SshController::class, 'getApacheConfig'])->name('ssh.apache-config');
 
+    // SSL installation (Let's Encrypt / Paid SSL)
+    Route::post('/ssl/install-letsencrypt', [SshController::class, 'installLetsEncryptSsl'])->name('ssh.ssl.letsencrypt');
+    Route::post('/ssl/install-paid', [SshController::class, 'installPaidSsl'])->name('ssh.ssl.paid');
+
     // Project Explorer (remote file browser)
     Route::post('/explorer/list', [SshController::class, 'exploreDirectory'])->name('ssh.explorer.list');
     Route::get('/explorer/file', [SshController::class, 'exploreFile'])->name('ssh.explorer.file');

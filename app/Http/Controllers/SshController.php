@@ -4367,4 +4367,1279 @@ class SshController extends Controller
 
         return implode("\n", $result);
     }
+
+    /* =====================================================================
+     |  SSL INSTALLATION — Let's Encrypt (free) & Paid SSL
+     |  Every remote operation runs through the explorer SSH base with the
+     |  same non-interactive root escalation used by the file explorer
+     |  (exploreAsRoot), so it can never hang waiting for a password.
+     * ===================================================================== */
+
+    /**
+     * Install a FREE Let's Encrypt certificate on the remote server.
+     *
+     * Flow (each step is reported back to the UI):
+     *  1. Detect the server's public IP (curl ifconfig.me style, ON the server).
+     *  2. Resolve the domain's A record ON the server and compare it with the
+     *     server IP — abort with an error when the domain is not pointed here.
+     *  3. Verify the domain appears in the enabled Apache VirtualHosts — when
+     *     missing, a port-80 VirtualHost is created with the chosen directory.
+     *  4. Ensure certbot + the Apache plugin are installed (auto-install).
+     *  5. Abort ONLY when SSL is ACTIVELY configured for the domain in the
+     *     enabled Apache vhosts (000-default-le-ssl.conf etc.). A stale
+     *     /etc/letsencrypt/renewal/<domain>.conf lineage alone is NOT a
+     *     blocker — the cert is re-issued and re-deployed instead.
+     *  6. Run certbot non-interactively WITHOUT an email:
+     *       certbot --apache --non-interactive --agree-tos
+     *               --register-unsafely-without-email --redirect -d <domain>
+     *  7. Verify OUR standard config — the enabled vhost must reference
+     *       SSLCertificateFile /etc/letsencrypt/live/<domain>/fullchain.pem
+     *       SSLCertificateKeyFile /etc/letsencrypt/live/<domain>/privkey.pem
+     *     When certbot issued the cert but did not deploy the vhost (e.g. the
+     *     previous SSL vhost was removed), the standard block is appended here
+     *     — exactly these two lines plus the standard Include, nothing else.
+     */
+    public function installLetsEncryptSsl(Request $request): JsonResponse
+    {
+        @set_time_limit(0);
+
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'port' => 'nullable|integer',
+            'domain' => 'required|string',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $domain = $this->sslNormalizeDomain((string) $request->input('domain'));
+        if ($domain === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please enter a valid domain name (e.g. example.com).',
+            ]);
+        }
+
+        $docroot = $this->sslNormalizeDocroot((string) $request->input('docroot', ''));
+        if ($docroot === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please enter a valid absolute directory path (e.g. /var/www/your-project/public).',
+            ]);
+        }
+
+        $steps = [];
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+
+        // ---- Step 1: public IP of the server (detected ON the server itself)
+        $steps[] = ['name' => "Detecting public IP of {$p['hostname']}", 'status' => 'running', 'output' => ''];
+        [$rc, $out] = $this->sslRun($base,
+            'curl -s --max-time 10 https://api.ipify.org 2>/dev/null'
+            . ' || curl -s --max-time 10 https://ifconfig.me 2>/dev/null'
+            . ' || curl -s --max-time 10 https://icanhazip.com 2>/dev/null'
+            . ' || curl -s --max-time 10 http://checkip.amazonaws.com 2>/dev/null',
+            45);
+        $serverIp = $this->sslFirstIp(implode("\n", $out));
+        if ($serverIp === null) {
+            $steps[0]['status'] = 'error';
+            $steps[0]['output'] = trim(implode("\n", $out)) ?: 'No output';
+            return response()->json([
+                'success' => false,
+                'message' => "Could not detect the public IP of {$p['hostname']}. Check that the server has internet access (curl).",
+                'steps' => $steps,
+            ]);
+        }
+        $steps[0]['status'] = 'ok';
+        $steps[0]['output'] = $serverIp;
+
+        // ---- Step 2: DNS check — the domain must point to this server
+        $steps[] = ['name' => "Verifying DNS: {$domain} → server", 'status' => 'running', 'output' => ''];
+        $dnsCmd = '(dig +short A ' . $domain . ' 2>/dev/null; '
+            . 'getent ahostsv4 ' . $domain . ' 2>/dev/null | awk \'{print $1}\'; '
+            . 'host -t A ' . $domain . ' 2>/dev/null | awk \'/has address/{print $4}\') '
+            . '| grep -E \'^[0-9]{1,3}(\\.[0-9]{1,3}){3}$\' | sort -u';
+        [$rc, $out] = $this->sslRun($base, $dnsCmd, 45);
+        $resolvedIps = array_values(array_filter(array_map('trim', $out), function ($l) {
+            return filter_var($l, FILTER_VALIDATE_IP) !== false;
+        }));
+        $steps[1]['output'] = !empty($resolvedIps)
+            ? 'Domain resolves to: ' . implode(', ', $resolvedIps)
+            : 'The domain did not resolve to any IP address';
+        if (empty($resolvedIps)) {
+            $steps[1]['status'] = 'error';
+            return response()->json([
+                'success' => false,
+                'message' => "DNS check failed: '{$domain}' does not resolve to any IP address yet. Add an A record pointing to {$serverIp} and try again.",
+                'steps' => $steps,
+            ]);
+        }
+        if (!in_array($serverIp, $resolvedIps, true)) {
+            $steps[1]['status'] = 'error';
+            return response()->json([
+                'success' => false,
+                'message' => "Domain '{$domain}' points to " . implode(', ', $resolvedIps) . " but the server IP is {$serverIp}. Point the domain to this server first, then retry.",
+                'steps' => $steps,
+            ]);
+        }
+        $steps[1]['status'] = 'ok';
+        $steps[1]['output'] .= " — matches server IP {$serverIp}";
+
+        // ---- Step 3: ensure a port-80 VirtualHost exists (created with the chosen
+        //      directory when missing) and that the required Apache modules are on
+        $steps[] = ['name' => 'Checking Apache VirtualHost for the domain', 'status' => 'running', 'output' => ''];
+
+        [$rc, $out] = $this->sslRun($base,
+            'if apache2ctl -M 2>/dev/null | grep -q rewrite_module; then echo MOD_REWRITE_OK; else a2enmod rewrite >/dev/null 2>&1 && echo MOD_REWRITE_ENABLED || echo MOD_REWRITE_SKIPPED; fi; '
+            . 'if apache2ctl -M 2>/dev/null | grep -q ssl_module; then echo MOD_SSL_OK; else a2enmod ssl >/dev/null 2>&1 && echo MOD_SSL_ENABLED || echo MOD_SSL_SKIPPED; fi',
+            60);
+        $modNotes = [trim(implode("\n", $out))];
+
+        [$rc, $out] = $this->sslRun($base, "grep -ils '{$domain}' /etc/apache2/sites-enabled/* 2>/dev/null | head -5", 30);
+        $vhostFiles = array_values(array_filter(array_map('trim', $out)));
+
+        if (!empty($vhostFiles)) {
+            // Domain already configured — existing VirtualHosts are never modified
+            $steps[2]['status'] = 'ok';
+            $steps[2]['output'] = implode("\n", $modNotes)
+                . "\nDomain already configured in:\n" . implode("\n", $vhostFiles)
+                . "\nNote: the entered directory was not applied — existing VirtualHosts are left untouched";
+        } else {
+            $port80Path = null;
+            $port80Content = '';
+            foreach (['/etc/apache2/sites-enabled/000-default.conf', '/etc/apache2/sites-available/000-default.conf'] as $cand) {
+                [$rc, $out] = $this->sslRun($base, 'cat ' . $cand . ' 2>/dev/null', 30);
+                $content = implode("\n", $out);
+                if ($rc === 0 && trim($content) !== '') {
+                    $port80Path = $cand;
+                    $port80Content = $content;
+                    break;
+                }
+            }
+
+            $block = $this->sslBuildPort80Vhost($domain, $docroot);
+            if ($port80Path !== null) {
+                $this->sslRun($base, 'cp -a ' . $port80Path . ' ' . $port80Path . '.bak-' . date('YmdHis') . ' && echo BACKUP_OK', 30);
+                $newPort80Content = rtrim($port80Content) . "\n\n" . $block . "\n";
+                $writeNote = "Added a port-80 VirtualHost for {$domain} to {$port80Path} (DocumentRoot: {$docroot})";
+            } else {
+                $port80Path = '/etc/apache2/sites-enabled/000-default.conf';
+                $newPort80Content = $block . "\n";
+                $writeNote = "Created {$port80Path} with a port-80 VirtualHost for {$domain} (DocumentRoot: {$docroot})";
+            }
+
+            $writeLog = '';
+            if (!$this->sslUploadFile($base, $port80Path, $newPort80Content, 0644, $writeLog)) {
+                $steps[2]['status'] = 'error';
+                $steps[2]['output'] = implode("\n", $modNotes) . "\nFailed to write {$port80Path}\n" . $writeLog;
+                return response()->json([
+                    'success' => false,
+                    'message' => "Could not create the Apache VirtualHost for {$domain} — review the output below.",
+                    'steps' => $steps,
+                ]);
+            }
+            $modNotes[] = $writeNote;
+            $steps[2]['status'] = 'ok';
+            $steps[2]['output'] = implode("\n", $modNotes);
+        }
+
+        // ---- Step 4: certbot present? auto-install when missing
+        $steps[] = ['name' => 'Checking / installing certbot', 'status' => 'running', 'output' => ''];
+        $certbotEnsureCmd =
+            'if command -v certbot >/dev/null 2>&1; then echo CERTBOT_PRESENT $(certbot --version 2>&1 | head -n1); '
+            . 'else echo CERTBOT_MISSING; '
+            . 'if command -v apt-get >/dev/null 2>&1; then export DEBIAN_FRONTEND=noninteractive; apt-get update -y >/dev/null 2>&1; apt-get install -y certbot python3-certbot-apache; '
+            . 'elif command -v dnf >/dev/null 2>&1; then dnf install -y certbot python3-certbot-apache || dnf install -y certbot; '
+            . 'elif command -v yum >/dev/null 2>&1; then yum install -y certbot python3-certbot-apache || yum install -y certbot; '
+            . 'elif command -v apk >/dev/null 2>&1; then apk add --no-cache certbot certbot-apache; '
+            . 'else echo NO_KNOWN_PACKAGE_MANAGER; fi; fi; '
+            . 'if command -v certbot >/dev/null 2>&1; then echo CERTBOT_READY; else echo CERTBOT_INSTALL_FAILED; fi';
+        [$rc, $out] = $this->sslRun($base, $certbotEnsureCmd, 600);
+        $ensureOut = trim(implode("\n", $out));
+        $steps[3]['output'] = $ensureOut !== '' ? $ensureOut : 'no output';
+        if (strpos($ensureOut, 'CERTBOT_READY') === false) {
+            $steps[3]['status'] = 'error';
+            return response()->json([
+                'success' => false,
+                'message' => 'certbot could not be installed automatically on the server. Install certbot + the Apache plugin manually and retry.',
+                'steps' => $steps,
+            ]);
+        }
+        $steps[3]['status'] = 'ok';
+
+        // ---- Step 5: is SSL ACTIVELY configured for the domain in Apache?
+        // The decision is based on the enabled vhosts (000-default.conf /
+        // 000-default-le-ssl.conf etc.) — NOT on the certbot lineage alone:
+        // a stale /etc/letsencrypt/renewal/<domain>.conf from a previous
+        // install must NOT block a re-install.
+        // NOTE: glob on purpose (not grep -r) — sites-enabled entries are
+        // usually SYMLINKS to sites-available and `grep -r` does not follow
+        // them, which silently skipped e.g. 000-default-le-ssl.conf.
+        $steps[] = ['name' => 'Checking the Apache SSL configuration for the domain', 'status' => 'running', 'output' => ''];
+
+        [$rc, $out] = $this->sslRun($base,
+            'if [ -f /etc/letsencrypt/renewal/' . $domain . '.conf ]; then echo LE_RENEWAL_CONF_EXISTS; fi; '
+            . 'echo RENEWAL_CHECK_DONE',
+            20);
+        $renewalConfExists = strpos(implode("\n", $out), 'LE_RENEWAL_CONF_EXISTS') !== false;
+
+        [$rc, $out] = $this->sslRun($base,
+            "grep -ils 'SSLCertificateFile' /etc/apache2/sites-enabled/* 2>/dev/null | xargs -r grep -ils 'servername " . $domain . "' 2>/dev/null",
+            30);
+        $activeSslFiles = array_values(array_filter(array_map('trim', $out)));
+
+        if (!empty($activeSslFiles)) {
+            // The domain is genuinely served over SSL — nothing to install
+            $steps[4]['status'] = 'error';
+            $steps[4]['output'] = "SSL is actively configured for {$domain} in:\n" . implode("\n", $activeSslFiles);
+            return response()->json([
+                'success' => false,
+                'message' => "SSL is already installed and actively configured for {$domain}. Nothing was changed.",
+                'steps' => $steps,
+            ]);
+        }
+
+        $steps[4]['status'] = 'ok';
+        $steps[4]['output'] = $renewalConfExists
+            ? "No active SSL VirtualHost for {$domain} in the enabled Apache configs — proceeding. A stale Let's Encrypt lineage exists (/etc/letsencrypt/renewal/{$domain}.conf); the certificate will be re-issued and re-deployed."
+            : 'No SSL configured for this domain — proceeding with certbot';
+
+        // ---- Step 6: run certbot (no email, exact domain only, auto redirect).
+        // With a stale lineage (cert exists but no vhost uses it) a plain run
+        // would answer "Certificate not yet due for renewal; no action taken"
+        // and deploy NOTHING — force the re-issue + vhost deployment then.
+        $steps[] = ['name' => "Running certbot for {$domain} (may take a few minutes)", 'status' => 'running', 'output' => ''];
+        $certbotCmd = 'certbot --apache --non-interactive --agree-tos --register-unsafely-without-email --redirect '
+            . ($renewalConfExists ? '--force-renewal ' : '')
+            . '-d ' . $domain . ' 2>&1';
+        [$rc, $out] = $this->sslRun($base, $certbotCmd, 600);
+        $certbotOut = trim(implode("\n", $out));
+        $steps[5]['output'] = $certbotOut !== '' ? $certbotOut : '(no output)';
+        if ($rc !== 0) {
+            $steps[5]['status'] = 'error';
+            return response()->json([
+                'success' => false,
+                'message' => 'certbot failed to issue the certificate — review the output below. Nothing else was changed.',
+                'steps' => $steps,
+            ]);
+        }
+        $steps[5]['status'] = 'ok';
+
+        // ---- Step 7: verify OUR standard config — the enabled vhost must use
+        //      exactly these paths (nothing else is accepted):
+        //        SSLCertificateFile /etc/letsencrypt/live/<domain>/fullchain.pem
+        //        SSLCertificateKeyFile /etc/letsencrypt/live/<domain>/privkey.pem
+        $steps[] = ['name' => 'Verifying the standard SSL configuration', 'status' => 'running', 'output' => ''];
+        $stdCertLine = 'SSLCertificateFile /etc/letsencrypt/live/' . $domain . '/fullchain.pem';
+        $stdKeyLine = 'SSLCertificateKeyFile /etc/letsencrypt/live/' . $domain . '/privkey.pem';
+        $verifyCmd =
+            'if [ -f /etc/letsencrypt/live/' . $domain . '/fullchain.pem ]; then echo VERIFY_CERT_OK; else echo VERIFY_CERT_MISSING; fi; '
+            . 'if grep -ils "SSLCertificateFile" /etc/apache2/sites-enabled/* 2>/dev/null | xargs -r grep -ils "servername ' . $domain . '" 2>/dev/null | grep -q .; then echo VERIFY_VHOST_OK; else echo VERIFY_VHOST_MISSING; fi; '
+            . 'if grep -ils "' . $stdCertLine . '" /etc/apache2/sites-enabled/* 2>/dev/null | grep -q .; then echo VERIFY_STDCERT_OK; else echo VERIFY_STDCERT_MISSING; fi; '
+            . 'if grep -ils "' . $stdKeyLine . '" /etc/apache2/sites-enabled/* 2>/dev/null | grep -q .; then echo VERIFY_STDKEY_OK; else echo VERIFY_STDKEY_MISSING; fi; '
+            . 'echo VERIFY_DONE';
+        [$rc, $out] = $this->sslRun($base, $verifyCmd, 60);
+        $verifyOut = trim(implode("\n", $out));
+        $steps[6]['output'] = $verifyOut !== '' ? $verifyOut : 'no output';
+
+        if (strpos($verifyOut, 'VERIFY_CERT_MISSING') !== false) {
+            $steps[6]['status'] = 'error';
+            return response()->json([
+                'success' => false,
+                'message' => "certbot reported success but the certificate files were not found under /etc/letsencrypt/live/{$domain}/ — review the output above.",
+                'steps' => $steps,
+            ]);
+        }
+
+        if (strpos($verifyOut, 'VERIFY_VHOST_OK') !== false && strpos($verifyOut, 'VERIFY_STDCERT_MISSING') !== false) {
+            // An SSL vhost exists but does NOT use our standard paths
+            $steps[6]['status'] = 'error';
+            return response()->json([
+                'success' => false,
+                'message' => "The SSL VirtualHost for {$domain} exists but does not use our standard certificate path ({$stdCertLine}). Fix it manually or remove that vhost block and reinstall.",
+                'steps' => $steps,
+            ]);
+        }
+
+        // ---- Normalize the -le-ssl conf BEFORE the final checks: certbot
+        // leaves commented-out redirect rules ("disabled on your HTTPS site …
+        // redirection loops") and sometimes misplaced *:80 copies of the
+        // vhost. Strip that noise, drop broken duplicates of our domain and
+        // make sure exactly ONE standard *:443 block exists — other domains
+        // are never touched.
+        $notes = [];
+        $sslEnabledPath = '/etc/apache2/sites-enabled/000-default-le-ssl.conf';
+        $sslAvailablePath = '/etc/apache2/sites-available/000-default-le-ssl.conf';
+        $sslConfPath = null;
+        $sslConfContent = null;
+        foreach ([$sslEnabledPath, $sslAvailablePath] as $cand) {
+            [$rc, $out] = $this->sslRun($base, 'cat ' . $cand . ' 2>/dev/null', 30);
+            $content = implode("\n", $out);
+            if ($rc === 0 && trim($content) !== '') { $sslConfPath = $cand; $sslConfContent = $content; break; }
+        }
+
+        $flags = ['noise_removed' => false, 'http_block_removed' => false, 'broken_block_removed' => false];
+        $normalized = '';
+        if ($sslConfContent !== null) {
+            [$normalized, $flags] = $this->sslNormalizeLeSslConf($sslConfContent, $domain, $stdCertLine);
+        }
+
+        // our standard block must be present exactly once
+        if ($normalized === '' || strpos($normalized, $stdCertLine) === false || strpos($normalized, $stdKeyLine) === false) {
+            $docrootDeploy = $docroot;
+            foreach (['/etc/apache2/sites-enabled/000-default.conf', '/etc/apache2/sites-available/000-default.conf'] as $cand) {
+                [$rc, $out] = $this->sslRun($base, 'cat ' . $cand . ' 2>/dev/null', 30);
+                $content = implode("\n", $out);
+                if ($rc === 0 && trim($content) !== '') {
+                    foreach ($this->parseVirtualHosts($content) as $v) {
+                        if (in_array($domain, $v['domains'], true) && !empty($v['document_root'])) { $docrootDeploy = $v['document_root']; }
+                    }
+                    break;
+                }
+            }
+            [$rc, $out] = $this->sslRun($base, '[ -f /etc/letsencrypt/options-ssl-apache.conf ] && echo OPTS_EXISTS || echo OPTS_MISSING', 20);
+            $block = $this->sslBuildSslVhostBlock(
+                $domain,
+                $docrootDeploy,
+                '/etc/letsencrypt/live/' . $domain . '/fullchain.pem',
+                '/etc/letsencrypt/live/' . $domain . '/privkey.pem',
+                null,
+                strpos(implode("\n", $out), 'OPTS_EXISTS') !== false
+            );
+            $normalized = ($normalized !== '' ? rtrim($normalized) . "\n\n" : '') . $block . "\n";
+        }
+
+        $stamp = date('YmdHis');
+        $wrote = false;
+        $leBackupPath = null;
+        $leCreated = false;
+        if ($sslConfContent === null || rtrim($sslConfContent) !== rtrim($normalized)) {
+            if ($sslConfPath !== null) {
+                $leBackupPath = $sslConfPath . '.bak-' . $stamp;
+                $this->sslRun($base, 'cp -a ' . $sslConfPath . ' ' . $leBackupPath . ' && echo BACKUP_OK', 30);
+            } else {
+                $sslConfPath = $sslEnabledPath;
+                $leCreated = true;
+            }
+
+            $writeLog = '';
+            if (!$this->sslUploadFile($base, $sslConfPath, $normalized, 0644, $writeLog)) {
+                $steps[6]['status'] = 'error';
+                $steps[6]['output'] = "Failed to write the cleaned SSL configuration to {$sslConfPath}\n" . $writeLog;
+                return response()->json(['success' => false, 'message' => "Failed to write the cleaned SSL configuration to {$sslConfPath}.", 'steps' => $steps]);
+            }
+            if ($sslConfPath === $sslAvailablePath) {
+                $this->sslRun($base, '[ -e ' . $sslEnabledPath . ' ] || ln -sf ' . $sslAvailablePath . ' ' . $sslEnabledPath . '; echo LINK_OK', 30);
+            }
+            $wrote = true;
+            if ($flags['noise_removed']) { $notes[] = "Removed certbot's commented-out rewrite noise from {$sslConfPath}"; }
+            if ($flags['http_block_removed']) { $notes[] = 'Removed the misplaced *:80 vhost copy from the SSL config (the real one lives in the port-80 config)'; }
+            if ($flags['broken_block_removed']) { $notes[] = 'Removed a broken/duplicate vhost for the domain (non-standard paths)'; }
+            if ($leCreated) { $notes[] = "Created {$sslConfPath}"; }
+        }
+
+        // the port-80 → https redirect must be ACTIVE in 000-default.conf
+        $p80Path = null;
+        $p80BackupPath = null;
+        $p80Content = '';
+        foreach (['/etc/apache2/sites-enabled/000-default.conf', '/etc/apache2/sites-available/000-default.conf'] as $cand) {
+            [$rc, $out] = $this->sslRun($base, 'cat ' . $cand . ' 2>/dev/null', 30);
+            $content = implode("\n", $out);
+            if ($rc === 0 && trim($content) !== '') { $p80Path = $cand; $p80Content = $content; break; }
+        }
+        if ($p80Path !== null) {
+            [$newP80, $rewriteMsg] = $this->sslInjectHttpsRewrite($p80Content, $domain);
+            if ($newP80 !== null) {
+                $p80BackupPath = $p80Path . '.bak-' . $stamp;
+                $this->sslRun($base, 'cp -a ' . $p80Path . ' ' . $p80BackupPath . ' && echo BACKUP_OK', 30);
+                $writeLog = '';
+                if ($this->sslUploadFile($base, $p80Path, $newP80, 0644, $writeLog)) {
+                    $wrote = true;
+                    $notes[] = $rewriteMsg;
+                } else {
+                    $notes[] = 'Could not update the port-80 redirect: ' . $writeLog;
+                }
+            } else {
+                $notes[] = $rewriteMsg;
+            }
+        }
+
+        if ($wrote) {
+            [$rc, $out] = $this->sslRun($base, 'apache2ctl configtest 2>&1 || apachectl configtest 2>&1', 60);
+            if (strpos(implode("\n", $out), 'Syntax OK') === false) {
+                $steps[6]['status'] = 'error';
+                $steps[6]['output'] = "Apache configuration test failed after normalization:\n" . trim(implode("\n", $out));
+                if ($leBackupPath !== null) {
+                    $this->sslRun($base, 'cp -a ' . $leBackupPath . ' ' . $sslConfPath . ' && echo RESTORED', 30);
+                    $steps[6]['output'] .= "\nRestored {$sslConfPath} from backup.";
+                } elseif ($leCreated) {
+                    $this->sslRun($base, 'rm -f ' . $sslConfPath, 30);
+                    $steps[6]['output'] .= "\nRemoved the created file {$sslConfPath} again.";
+                }
+                if ($p80BackupPath !== null) {
+                    $this->sslRun($base, 'cp -a ' . $p80BackupPath . ' ' . $p80Path . ' && echo RESTORED', 30);
+                    $steps[6]['output'] .= "\nRestored {$p80Path} from backup.";
+                }
+                return response()->json(['success' => false, 'message' => 'The Apache configuration test failed after normalization — changes were rolled back.', 'steps' => $steps]);
+            }
+            [$rc, $out] = $this->sslRun($base,
+                'systemctl reload apache2 2>/dev/null || systemctl reload httpd 2>/dev/null || service apache2 reload 2>/dev/null || service httpd reload 2>/dev/null || apache2ctl -k graceful 2>/dev/null; '
+                . 'systemctl is-active apache2 2>/dev/null || systemctl is-active httpd 2>/dev/null || echo APACHE_STATUS_UNKNOWN',
+                60);
+            $notes[] = 'Apache reloaded';
+        }
+
+        // refresh the verification AFTER normalization
+        [$rc, $out] = $this->sslRun($base, $verifyCmd, 60);
+        $verifyOut = trim(implode("\n", $out));
+        $steps[6]['output'] = (!empty($notes) ? implode("\n", $notes) . "\n" : '') . ($verifyOut !== '' ? $verifyOut : 'no output');
+
+        if (strpos($verifyOut, 'VERIFY_VHOST_MISSING') !== false) {
+            // certbot issued the certificate but did not deploy the vhost
+            // (typical when the previous SSL vhost was removed) — append the
+            // standard block ourselves now.
+            $steps[6]['status'] = 'ok';
+            $steps[6]['output'] = 'Certificate issued, but certbot did not deploy the SSL VirtualHost — deploying our standard block';
+
+            [$rc, $out] = $this->sslRun($base, '[ -f /etc/letsencrypt/options-ssl-apache.conf ] && echo OPTS_EXISTS || echo OPTS_MISSING', 20);
+            $includeSslOptions = strpos(implode("\n", $out), 'OPTS_EXISTS') !== false;
+
+            $sslEnabledPath = '/etc/apache2/sites-enabled/000-default-le-ssl.conf';
+            $sslAvailablePath = '/etc/apache2/sites-available/000-default-le-ssl.conf';
+            $sslConfPath = null;
+            $sslConfContent = null;
+            foreach ([$sslEnabledPath, $sslAvailablePath] as $cand) {
+                [$rc, $out] = $this->sslRun($base, 'cat ' . $cand . ' 2>/dev/null', 30);
+                $content = implode("\n", $out);
+                if ($rc === 0 && trim($content) !== '') { $sslConfPath = $cand; $sslConfContent = $content; break; }
+            }
+
+            // DocumentRoot: the port-80 vhost of this domain (created/verified in step 3)
+            $docrootDeploy = $docroot;
+            foreach (['/etc/apache2/sites-enabled/000-default.conf', '/etc/apache2/sites-available/000-default.conf'] as $cand) {
+                [$rc, $out] = $this->sslRun($base, 'cat ' . $cand . ' 2>/dev/null', 30);
+                $content = implode("\n", $out);
+                if ($rc === 0 && trim($content) !== '') {
+                    foreach ($this->parseVirtualHosts($content) as $v) {
+                        if (in_array($domain, $v['domains'], true) && !empty($v['document_root'])) {
+                            $docrootDeploy = $v['document_root'];
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // Our standard Let's Encrypt block — exactly these two certificate
+            // lines plus the standard Include, nothing else:
+            //   SSLCertificateFile /etc/letsencrypt/live/<domain>/fullchain.pem
+            //   SSLCertificateKeyFile /etc/letsencrypt/live/<domain>/privkey.pem
+            $block = $this->sslBuildSslVhostBlock(
+                $domain,
+                $docrootDeploy,
+                '/etc/letsencrypt/live/' . $domain . '/fullchain.pem',
+                '/etc/letsencrypt/live/' . $domain . '/privkey.pem',
+                null,
+                $includeSslOptions
+            );
+
+            $createdConf = false;
+            $backupPath = null;
+            if ($sslConfPath !== null) {
+                $backupPath = $sslConfPath . '.bak-' . date('YmdHis');
+                $this->sslRun($base, 'cp -a ' . $sslConfPath . ' ' . $backupPath . ' && echo BACKUP_OK', 30);
+                $newSslContent = rtrim($sslConfContent) . "\n\n" . $block . "\n";
+            } else {
+                $sslConfPath = $sslEnabledPath;
+                $newSslContent = $block . "\n";
+                $createdConf = true;
+            }
+            $deployIdx = count($steps) - 1;
+
+            $writeLog = '';
+            if (!$this->sslUploadFile($base, $sslConfPath, $newSslContent, 0644, $writeLog)) {
+                $steps[$deployIdx]['status'] = 'error';
+                $steps[$deployIdx]['output'] = "Failed to write {$sslConfPath}\n" . $writeLog;
+                return response()->json(['success' => false, 'message' => "Failed to deploy the standard SSL VirtualHost to {$sslConfPath}.", 'steps' => $steps]);
+            }
+            if ($sslConfPath === $sslAvailablePath) {
+                $this->sslRun($base, '[ -e ' . $sslEnabledPath . ' ] || ln -sf ' . $sslAvailablePath . ' ' . $sslEnabledPath . '; echo LINK_OK', 30);
+            }
+
+            // syntax test — roll back when it fails
+            [$rc, $out] = $this->sslRun($base, 'apache2ctl configtest 2>&1 || apachectl configtest 2>&1', 60);
+            if (strpos(implode("\n", $out), 'Syntax OK') === false) {
+                $steps[$deployIdx]['status'] = 'error';
+                $steps[$deployIdx]['output'] = "Apache configuration test failed after deploying:\n" . trim(implode("\n", $out));
+                if ($createdConf) {
+                    $this->sslRun($base, 'rm -f ' . $sslConfPath, 30);
+                    $steps[$deployIdx]['output'] .= "\nRemoved the created file {$sslConfPath} again.";
+                } elseif ($backupPath !== null) {
+                    $this->sslRun($base, 'cp -a ' . $backupPath . ' ' . $sslConfPath . ' && echo RESTORED', 30);
+                    $steps[$deployIdx]['output'] .= "\nRestored {$sslConfPath} from backup.";
+                }
+                return response()->json(['success' => false, 'message' => 'The Apache configuration test failed after deploying the SSL VirtualHost — changes were rolled back.', 'steps' => $steps]);
+            }
+
+            // reload Apache
+            [$rc, $out] = $this->sslRun($base,
+                'systemctl reload apache2 2>/dev/null || systemctl reload httpd 2>/dev/null || service apache2 reload 2>/dev/null || service httpd reload 2>/dev/null || apache2ctl -k graceful 2>/dev/null; '
+                . 'systemctl is-active apache2 2>/dev/null || systemctl is-active httpd 2>/dev/null || echo APACHE_STATUS_UNKNOWN',
+                60);
+            $reloadOut = trim(implode("\n", $out));
+
+            // final check: the standard lines must now be present
+            [$rc, $out] = $this->sslRun($base,
+                'if grep -ils "' . $stdCertLine . '" /etc/apache2/sites-enabled/* 2>/dev/null | grep -q .; then echo VERIFY_STDCERT_OK; else echo VERIFY_STDCERT_MISSING; fi; '
+                . 'if grep -ils "' . $stdKeyLine . '" /etc/apache2/sites-enabled/* 2>/dev/null | grep -q .; then echo VERIFY_STDKEY_OK; else echo VERIFY_STDKEY_MISSING; fi; '
+                . 'echo VERIFY_DONE',
+                30);
+            $finalOut = implode("\n", $out);
+            if (strpos($finalOut, 'VERIFY_STDCERT_MISSING') !== false || strpos($finalOut, 'VERIFY_STDKEY_MISSING') !== false) {
+                $steps[$deployIdx]['status'] = 'error';
+                $steps[$deployIdx]['output'] = "Deployed to {$sslConfPath} but the standard certificate lines are still not present in the enabled config.\n" . $reloadOut;
+                return response()->json(['success' => false, 'message' => "The SSL VirtualHost was deployed to {$sslConfPath} but the standard certificate paths are still missing. Check the server setup.", 'steps' => $steps]);
+            }
+
+            $steps[$deployIdx]['status'] = 'ok';
+            $steps[$deployIdx]['output'] = "Deployed the standard SSL VirtualHost to {$sslConfPath} (" . ($createdConf ? 'file created' : 'appended, backup kept') . ")\n"
+                . '  ' . $stdCertLine . "\n"
+                . '  ' . $stdKeyLine . "\n"
+                . $reloadOut;
+        } else {
+            $steps[6]['status'] = 'ok';
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Let's Encrypt SSL installed successfully for {$domain} on {$p['hostname']} — standard paths verified ({$stdCertLine}).",
+            'steps' => $steps,
+            'domain' => $domain,
+        ]);
+    }
+
+    /**
+     * Install a PAID SSL certificate on the remote server.
+     *
+     * Flow (each step is reported back to the UI):
+     *  1. Verify the certificate / private-key pair LOCALLY — nothing is
+     *     uploaded and nothing changes when they do not match.
+     *  2. Read the Apache configs. When SSL is already installed for the
+     *     domain the new files get a version suffix (…1, …2, …) and a new
+     *     vhost block is appended. The chosen directory becomes the
+     *     DocumentRoot / <Directory> of the new block.
+     *  3. Upload public cert / private key / chain to /etc/pki/tls/ with
+     *     domain-based file names (private key chmod 600).
+     *  4. APPEND a new <IfModule mod_ssl.c><VirtualHost *:443> block to the
+     *     -le-ssl.conf (created when missing) — existing domains are never
+     *     modified or removed.
+     *  5. Insert the port-80 → https rewrite rules for this domain.
+     *  6. apache2ctl configtest — every change is rolled back when it fails.
+     *  7. Reload Apache.
+     */
+    public function installPaidSsl(Request $request): JsonResponse
+    {
+        @set_time_limit(0);
+
+        $request->validate([
+            'host' => 'required|string',
+            'hostname' => 'required|string',
+            'username' => 'required|string',
+            'identity_file' => 'required|string',
+            'port' => 'nullable|integer',
+            'domain' => 'required|string',
+        ]);
+
+        $p = $this->exploreRequestParams($request);
+        $err = $this->exploreCheckParams($p);
+        if ($err) return $err;
+
+        $domain = $this->sslNormalizeDomain((string) $request->input('domain'));
+        if ($domain === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please enter a valid domain name (e.g. example.com).',
+            ]);
+        }
+
+        $docroot = $this->sslNormalizeDocroot((string) $request->input('docroot', ''));
+        if ($docroot === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please enter a valid absolute directory path (e.g. /var/www/your-project/public).',
+            ]);
+        }
+
+        $cert = $this->sslFieldContent($request, 'cert');
+        $key = $this->sslFieldContent($request, 'key');
+        $chain = $this->sslFieldContent($request, 'chain'); // optional
+
+        if ($cert === null || $key === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Public certificate and private key are required (upload a file or paste the text).',
+            ]);
+        }
+        if (strpos($cert, 'BEGIN CERTIFICATE') === false) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The public certificate does not look like a PEM certificate (missing "-----BEGIN CERTIFICATE-----").',
+            ]);
+        }
+        if (strpos($key, 'PRIVATE KEY') === false) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The private key does not look like a PEM private key (missing "-----...PRIVATE KEY-----").',
+            ]);
+        }
+
+        $steps = [];
+        $base = $this->buildExploreSshBase($p['username'], $p['hostname'], $p['port'], $p['identity_file']);
+        $slug = $this->sslSlug($domain);
+        $backupSuffix = date('YmdHis');
+        $backups = [];      // original path => backup path (files that get modified)
+        $createdFiles = []; // files created by this run (removed again on rollback)
+
+        // ---- Step 1: key-pair verification (BEFORE anything is uploaded)
+        $steps[] = ['name' => 'Verifying certificate / private-key pair', 'status' => 'running', 'output' => ''];
+        if (!$this->sslCertKeyMatch($cert, $key)) {
+            $steps[0]['status'] = 'error';
+            $steps[0]['output'] = 'The public certificate and the private key DO NOT match.';
+            return response()->json([
+                'success' => false,
+                'message' => 'Certificate and private key do not match — nothing was uploaded and nothing was changed on the server.',
+                'steps' => $steps,
+            ]);
+        }
+        $steps[0]['status'] = 'ok';
+        $steps[0]['output'] = 'Key pair matches — safe to upload';
+
+        // ---- Step 2: read the Apache configuration + duplicate checks
+        $steps[] = ['name' => 'Reading the Apache configuration', 'status' => 'running', 'output' => ''];
+
+        $sslEnabledPath = '/etc/apache2/sites-enabled/000-default-le-ssl.conf';
+        $sslAvailablePath = '/etc/apache2/sites-available/000-default-le-ssl.conf';
+        $sslConfPath = null;
+        $sslConfContent = null;
+        foreach ([$sslEnabledPath, $sslAvailablePath] as $cand) {
+            [$rc, $out] = $this->sslRun($base, 'cat ' . $cand . ' 2>/dev/null', 30);
+            $content = implode("\n", $out);
+            if ($rc === 0 && trim($content) !== '') {
+                $sslConfPath = $cand;
+                $sslConfContent = $content;
+                break;
+            }
+        }
+
+        $port80Path = null;
+        $port80Content = '';
+        foreach (['/etc/apache2/sites-enabled/000-default.conf', '/etc/apache2/sites-available/000-default.conf'] as $cand) {
+            [$rc, $out] = $this->sslRun($base, 'cat ' . $cand . ' 2>/dev/null', 30);
+            $content = implode("\n", $out);
+            if ($rc === 0 && trim($content) !== '') {
+                $port80Path = $cand;
+                $port80Content = $content;
+                break;
+            }
+        }
+
+        // Is SSL already installed for this domain anywhere in sites-enabled?
+        // (glob on purpose — entries are symlinks and `grep -r` skips them)
+        [$rc, $out] = $this->sslRun($base,
+            "grep -ils 'SSLCertificateFile' /etc/apache2/sites-enabled/* 2>/dev/null | xargs -r grep -ils 'servername " . $domain . "' 2>/dev/null",
+            30);
+        $dupFiles = array_values(array_filter(array_map('trim', $out)));
+        $sslAlreadyInstalled = !empty($dupFiles);
+
+        // File naming version: base names on the first install, then
+        // '<slug>1...', '<slug>2...' etc. — existing files are never overwritten
+        $certExt = 'crt';
+        if ($request->hasFile('cert_file')) {
+            $ext = strtolower($request->file('cert_file')->getClientOriginalExtension());
+            if (in_array($ext, ['csr', 'crt', 'pem', 'cer'], true)) { $certExt = $ext; }
+        }
+        $chainBase = 'chain';
+        $chainExt = 'crt';
+        if ($chain !== null && $request->hasFile('chain_file')) {
+            $chainBase = $this->sslChainBase($request->file('chain_file')->getClientOriginalName());
+            $ext = strtolower($request->file('chain_file')->getClientOriginalExtension());
+            if (in_array($ext, ['crt', 'pem', 'cer'], true)) { $chainExt = $ext; }
+        }
+
+        $minN = $sslAlreadyInstalled ? 1 : 0;
+        [$rc, $out] = $this->sslRun($base,
+            'N=' . $minN . '; while [ $N -le 500 ]; do S=""; [ $N -gt 0 ] && S=$N; '
+            . 'if [ ! -e "/etc/pki/tls/' . $slug . '${S}.' . $certExt . '" ] '
+            . '&& [ ! -e "/etc/pki/tls/' . $slug . '_private_key${S}.txt" ] '
+            . '&& [ ! -e "/etc/pki/tls/' . $slug . '_' . $chainBase . '${S}.' . $chainExt . '" ]; then echo FREE_N=$N; break; fi; '
+            . 'N=$((N+1)); done; echo COUNTER_DONE',
+            60);
+        $freeN = null;
+        foreach ($out as $line) {
+            if (strpos($line, 'FREE_N=') === 0) { $freeN = (int) substr($line, 7); break; }
+        }
+        if ($freeN === null) {
+            $steps[1]['status'] = 'error';
+            $steps[1]['output'] = "Could not determine a free file version in /etc/pki/tls for {$domain}.";
+            return response()->json([
+                'success' => false,
+                'message' => 'Could not determine a free certificate file version on the server. Nothing was changed.',
+                'steps' => $steps,
+            ]);
+        }
+        $suffix = $freeN === 0 ? '' : (string) $freeN;
+
+        $steps[1]['status'] = 'ok';
+        $steps[1]['output'] = ($sslConfPath ?? ($sslEnabledPath . ' (will be created)')) . "\n"
+            . 'DocumentRoot: ' . $docroot . "\n"
+            . ($sslAlreadyInstalled
+                ? "SSL is already installed for {$domain} — new files get version suffix '{$suffix}' and a new VirtualHost block is appended\nExisting: " . implode(', ', $dupFiles)
+                : 'No existing SSL for this domain — base file names will be used');
+
+        // ---- Step 3: upload the certificate files to /etc/pki/tls
+        $steps[] = ['name' => 'Uploading the certificate files to /etc/pki/tls', 'status' => 'running', 'output' => ''];
+        [$rc, $out] = $this->sslRun($base, 'mkdir -p /etc/pki/tls && echo PKI_DIR_OK', 30);
+        if (strpos(implode("\n", $out), 'PKI_DIR_OK') === false) {
+            $steps[2]['status'] = 'error';
+            $steps[2]['output'] = 'Could not create /etc/pki/tls on the server.';
+            return response()->json([
+                'success' => false,
+                'message' => 'Could not create /etc/pki/tls on the server (permission denied?). Nothing was changed.',
+                'steps' => $steps,
+            ]);
+        }
+
+        $certPath = '/etc/pki/tls/' . $slug . $suffix . '.' . $certExt;
+        $keyPath = '/etc/pki/tls/' . $slug . '_private_key' . $suffix . '.txt';
+        $chainPath = '/etc/pki/tls/' . $slug . '_' . $chainBase . $suffix . '.' . $chainExt;
+
+        $uploadLog = '';
+        if (!$this->sslUploadFile($base, $certPath, $cert, 0644, $uploadLog)) {
+            $steps[2]['status'] = 'error';
+            $steps[2]['output'] = "Failed to upload {$certPath}\n" . $uploadLog;
+            return response()->json(['success' => false, 'message' => "Failed to upload the public certificate to {$certPath}. Nothing else was changed.", 'steps' => $steps]);
+        }
+        if (!$this->sslUploadFile($base, $keyPath, $key, 0600, $uploadLog)) {
+            $this->sslRun($base, 'rm -f ' . $certPath, 20);
+            $steps[2]['status'] = 'error';
+            $steps[2]['output'] = "Failed to upload {$keyPath}\n" . $uploadLog;
+            return response()->json(['success' => false, 'message' => "Failed to upload the private key to {$keyPath}. The certificate file was removed again.", 'steps' => $steps]);
+        }
+        $chainNote = 'Chain not provided — SSLCertificateChainFile omitted';
+        if ($chain !== null) {
+            if (!$this->sslUploadFile($base, $chainPath, $chain, 0644, $uploadLog)) {
+                $this->sslRun($base, 'rm -f ' . $certPath . ' ' . $keyPath, 20);
+                $steps[2]['status'] = 'error';
+                $steps[2]['output'] = "Failed to upload {$chainPath}\n" . $uploadLog;
+                return response()->json(['success' => false, 'message' => "Failed to upload the chain to {$chainPath}. The uploaded files were removed again.", 'steps' => $steps]);
+            }
+            $chainNote = $chainPath;
+        }
+        $createdFiles[] = $certPath;
+        $createdFiles[] = $keyPath;
+        if ($chain !== null) { $createdFiles[] = $chainPath; }
+        $steps[2]['status'] = 'ok';
+        $steps[2]['output'] = $certPath . "\n" . $keyPath . "\n" . $chainNote;
+
+        // ---- Step 4: APPEND the SSL VirtualHost (existing content untouched)
+        $steps[] = ['name' => 'Writing the SSL VirtualHost', 'status' => 'running', 'output' => ''];
+
+        // make sure mod_ssl + mod_rewrite are enabled (Debian) — harmless when already active
+        [$rc, $out] = $this->sslRun($base,
+            'if apache2ctl -M 2>/dev/null | grep -q ssl_module; then echo MOD_SSL_OK; else a2enmod ssl >/dev/null 2>&1 && echo MOD_SSL_ENABLED || echo MOD_SSL_SKIPPED; fi; '
+            . 'if apache2ctl -M 2>/dev/null | grep -q rewrite_module; then echo MOD_REWRITE_OK; else a2enmod rewrite >/dev/null 2>&1 && echo MOD_REWRITE_ENABLED || echo MOD_REWRITE_SKIPPED; fi',
+            60);
+        $modSslOut = trim(implode("\n", $out));
+
+        [$rc, $out] = $this->sslRun($base, '[ -f /etc/letsencrypt/options-ssl-apache.conf ] && echo OPTS_EXISTS || echo OPTS_MISSING', 20);
+        $includeSslOptions = strpos(implode("\n", $out), 'OPTS_EXISTS') !== false;
+
+        $block = $this->sslBuildSslVhostBlock($domain, $docroot, $certPath, $keyPath, $chain !== null ? $chainPath : null, $includeSslOptions);
+
+        if ($sslConfPath !== null) {
+            $this->sslRun($base, 'cp -a ' . $sslConfPath . ' ' . $sslConfPath . '.bak-' . $backupSuffix . ' && echo BACKUP_OK', 30);
+            $backups[$sslConfPath] = $sslConfPath . '.bak-' . $backupSuffix;
+            $newSslContent = rtrim($sslConfContent) . "\n\n" . $block . "\n";
+            $sslWriteNote = ' (appended — existing content untouched)';
+        } else {
+            $sslConfPath = $sslEnabledPath;
+            $newSslContent = $block . "\n";
+            $createdFiles[] = $sslConfPath;
+            $sslWriteNote = ' (created)';
+        }
+
+        $writeLog = '';
+        if (!$this->sslUploadFile($base, $sslConfPath, $newSslContent, 0644, $writeLog)) {
+            $steps[3]['status'] = 'error';
+            $steps[3]['output'] = "Failed to write {$sslConfPath}\n" . $writeLog;
+            $this->sslRollback($base, $backups, $createdFiles, $rollbackLog);
+            $steps[] = ['name' => 'Rollback', 'status' => 'error', 'output' => $rollbackLog];
+            return response()->json(['success' => false, 'message' => "Failed to write {$sslConfPath}. All changes were rolled back.", 'steps' => $steps]);
+        }
+        // When writing to sites-available, make sure the site is enabled
+        if ($sslConfPath === $sslAvailablePath) {
+            $this->sslRun($base, '[ -e ' . $sslEnabledPath . ' ] || ln -sf ' . $sslAvailablePath . ' ' . $sslEnabledPath . '; echo LINK_OK', 30);
+        }
+        $steps[3]['status'] = 'ok';
+        $steps[3]['output'] = $modSslOut . "\n" . $sslConfPath . $sslWriteNote;
+        if ($sslAlreadyInstalled) {
+            $steps[3]['output'] .= "\nNote: a previous SSL VirtualHost for {$domain} already exists — the new block was APPENDED. Apache serves the FIRST matching vhost, so comment out / remove the old block to activate the new certificate.";
+        }
+
+        // ---- Step 5: port-80 → https redirect (insert-only, existing untouched)
+        $steps[] = ['name' => 'Configuring the port-80 HTTPS redirect', 'status' => 'running', 'output' => ''];
+        [$newPort80Content, $rewriteMsg] = $this->sslInjectHttpsRewrite($port80Content, $domain);
+        if ($newPort80Content !== null) {
+            $this->sslRun($base, 'cp -a ' . $port80Path . ' ' . $port80Path . '.bak-' . $backupSuffix . ' && echo BACKUP_OK', 30);
+            $backups[$port80Path] = $port80Path . '.bak-' . $backupSuffix;
+            $writeLog = '';
+            if ($this->sslUploadFile($base, $port80Path, $newPort80Content, 0644, $writeLog)) {
+                $steps[4]['status'] = 'ok';
+                $steps[4]['output'] = $rewriteMsg;
+            } else {
+                $steps[4]['status'] = 'error';
+                $steps[4]['output'] = "Failed to update {$port80Path}\n" . $writeLog;
+                $this->sslRollback($base, $backups, $createdFiles, $rollbackLog);
+                $steps[] = ['name' => 'Rollback', 'status' => 'error', 'output' => $rollbackLog];
+                return response()->json(['success' => false, 'message' => "Failed to update {$port80Path}. All changes were rolled back.", 'steps' => $steps]);
+            }
+        } else {
+            $steps[4]['status'] = 'ok';
+            $steps[4]['output'] = $rewriteMsg;
+        }
+
+        // ---- Step 6: syntax test — roll everything back when it fails
+        $steps[] = ['name' => 'Testing the Apache configuration', 'status' => 'running', 'output' => ''];
+        [$rc, $out] = $this->sslRun($base, 'apache2ctl configtest 2>&1 || apachectl configtest 2>&1', 60);
+        $testOut = trim(implode("\n", $out));
+        $steps[5]['output'] = $testOut !== '' ? $testOut : 'no output';
+        if (strpos($testOut, 'Syntax OK') === false) {
+            $steps[5]['status'] = 'error';
+            $this->sslRollback($base, $backups, $createdFiles, $rollbackLog);
+            $steps[] = ['name' => 'Rollback (config test failed)', 'status' => 'error', 'output' => $rollbackLog];
+            return response()->json([
+                'success' => false,
+                'message' => 'The Apache configuration test failed — every change was rolled back automatically. Review the errors above.',
+                'steps' => $steps,
+            ]);
+        }
+        $steps[5]['status'] = 'ok';
+
+        // ---- Step 7: reload Apache
+        $steps[] = ['name' => 'Reloading Apache', 'status' => 'running', 'output' => ''];
+        [$rc, $out] = $this->sslRun($base,
+            'systemctl reload apache2 2>/dev/null || systemctl reload httpd 2>/dev/null || service apache2 reload 2>/dev/null || service httpd reload 2>/dev/null || apache2ctl -k graceful 2>/dev/null; '
+            . 'systemctl is-active apache2 2>/dev/null || systemctl is-active httpd 2>/dev/null || echo APACHE_STATUS_UNKNOWN',
+            60);
+        $reloadOut = trim(implode("\n", $out));
+        $steps[6]['output'] = $reloadOut !== '' ? $reloadOut : 'reload command issued';
+        if (stripos($reloadOut, 'failed') !== false) {
+            $steps[6]['status'] = 'error';
+            return response()->json(['success' => false, 'message' => 'The Apache reload reported a failure — check the server.', 'steps' => $steps]);
+        }
+        $steps[6]['status'] = 'ok';
+
+        return response()->json([
+            'success' => true,
+            'message' => "Paid SSL installed successfully for {$domain} on {$p['hostname']}.",
+            'steps' => $steps,
+            'domain' => $domain,
+            'files' => [
+                'certificate' => $certPath,
+                'key' => $keyPath,
+                'chain' => $chain !== null ? $chainPath : null,
+            ],
+            'ssl_vhost' => $sslConfPath,
+        ]);
+    }
+
+    /* ------------------------- SSL helpers ------------------------- */
+
+    /**
+     * Run a remote command as root (when non-interactive sudo is available)
+     * through the explorer SSH base. Returns [exitCode, outputLines] with
+     * stderr included and the SSH "Warning: ..." noise lines filtered out.
+     */
+    private function sslRun(string $base, string $remoteCmd, int $timeoutSec = 60): array
+    {
+        $out = [];
+        exec('timeout ' . (int) $timeoutSec . ' ' . $base . ' ' . escapeshellarg($this->exploreAsRoot($remoteCmd)) . ' 2>&1', $out, $rc);
+        $out = array_values(array_filter($out, function ($l) {
+            return !preg_match('/^Warning: /', $l);
+        }));
+        return [$rc, $out];
+    }
+
+    /**
+     * Normalize a pasted domain: strip scheme / path / port, lowercase.
+     * Returns null when the result is not a plain hostname.
+     */
+    private function sslNormalizeDomain(string $raw): ?string
+    {
+        $raw = trim($raw);
+        if ($raw === '') return null;
+
+        if (preg_match('#^[a-z][a-z0-9+.\-]*://#i', $raw)) {
+            // With a scheme, parse_url extracts the host reliably
+            $host = parse_url($raw, PHP_URL_HOST);
+            $raw = is_string($host) && $host !== '' ? $host : $raw;
+        } else {
+            // No scheme: cut anything after the first '/', then try to parse
+            $slash = strpos($raw, '/');
+            if ($slash !== false) { $raw = substr($raw, 0, $slash); }
+            $host = parse_url($raw, PHP_URL_HOST);
+            if (is_string($host) && $host !== '') { $raw = $host; }
+        }
+
+        $raw = strtolower(rtrim($raw, '.'));
+        if (strpos($raw, ':') !== false) { $raw = explode(':', $raw)[0]; }
+        if (preg_match('/^([a-z0-9]([a-z0-9\-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9\-]*[a-z0-9])?)+$/', $raw)) {
+            return $raw;
+        }
+        return null;
+    }
+
+    /** First valid IP token found in free text (null when none). */
+    private function sslFirstIp(string $text): ?string
+    {
+        foreach (preg_split('/[\s,;]+/', trim($text)) as $token) {
+            $token = trim($token);
+            if ($token !== '' && filter_var($token, FILTER_VALIDATE_IP) !== false) {
+                return $token;
+            }
+        }
+        return null;
+    }
+
+    /** Domain → filesystem slug: uatpayout.wegofin.com → uatpayout_wegofin_com */
+    private function sslSlug(string $domain): string
+    {
+        return (string) preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($domain)));
+    }
+
+    /**
+     * Certificate / key content from either the uploaded file or the pasted text.
+     */
+    private function sslFieldContent(Request $request, string $field): ?string
+    {
+        if ($request->hasFile($field . '_file')) {
+            $file = $request->file($field . '_file');
+            if (!$file->isValid()) { return null; }
+            $content = @file_get_contents($file->getRealPath());
+            return ($content !== false && trim($content) !== '') ? $content : null;
+        }
+        $text = trim((string) $request->input($field . '_text', ''));
+        return $text !== '' ? $text : null;
+    }
+
+    /**
+     * Verify a PEM certificate and a PEM private key belong together by
+     * comparing the derived public keys. Falls back to the local openssl
+     * binary (modulus comparison) when the PHP OpenSSL extension cannot
+     * parse one of the inputs. Runs entirely locally — the server is not
+     * touched until this passes.
+     */
+    private function sslCertKeyMatch(string $certPem, string $keyPem): bool
+    {
+        $certPub = @openssl_pkey_get_public($certPem);
+        $keyPub = @openssl_pkey_get_public($keyPem);
+        if ($certPub !== false && $keyPub !== false) {
+            $a = openssl_pkey_get_details($certPub);
+            $b = openssl_pkey_get_details($keyPub);
+            if (is_array($a) && is_array($b) && isset($a['key'], $b['key'])) {
+                return hash_equals($a['key'], $b['key']);
+            }
+        }
+
+        // Fallback: local openssl binary (modulus comparison)
+        $certTmp = tempnam(sys_get_temp_dir(), 'sslcrt_');
+        $keyTmp = tempnam(sys_get_temp_dir(), 'sslkey_');
+        if ($certTmp === false || $keyTmp === false) { return false; }
+        file_put_contents($certTmp, $certPem);
+        file_put_contents($keyTmp, $keyPem);
+        $certMod = @shell_exec('openssl x509 -noout -modulus -in ' . escapeshellarg($certTmp) . ' 2>/dev/null');
+        $keyMod = @shell_exec('openssl rsa -noout -modulus -in ' . escapeshellarg($keyTmp) . ' 2>/dev/null');
+        @unlink($certTmp);
+        @unlink($keyTmp);
+        if (is_string($certMod) && is_string($keyMod)) {
+            $certMod = strtoupper(trim(preg_replace('/^Modulus=/im', '', trim($certMod))));
+            $keyMod = strtoupper(trim(preg_replace('/^Modulus=/im', '', trim($keyMod))));
+            if ($certMod !== '' && $keyMod !== '') {
+                return hash_equals($certMod, $keyMod);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Upload file content to an absolute path on the remote server as root
+     * (content piped over SSH stdin — same mechanism as the file explorer).
+     * $log receives the raw output for diagnostics.
+     */
+    private function sslUploadFile(string $base, string $targetPath, string $content, int $chmod, ?string &$log = null): bool
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'sslup_');
+        if ($tmp === false || file_put_contents($tmp, $content) === false) {
+            $log = 'Could not stage the file locally.';
+            return false;
+        }
+        $cmd = 'cat > ' . $this->remoteQuote($targetPath) . ' 2>/dev/null'
+            . ' && chmod ' . decoct($chmod) . ' ' . $this->remoteQuote($targetPath) . ' 2>/dev/null'
+            . ' && echo UPLOAD_OK';
+        $out = [];
+        exec('timeout 120 ' . $base . ' ' . escapeshellarg($this->exploreAsRoot($cmd)) . ' < ' . escapeshellarg($tmp) . ' 2>&1', $out, $rc);
+        @unlink($tmp);
+        $log = trim(implode("\n", $out));
+        return $rc === 0 && strpos($log, 'UPLOAD_OK') !== false;
+    }
+
+    /**
+     * Build the <VirtualHost *:443> block in OUR standard format. It is
+     * APPENDED to the conf file, so existing domains are never modified or
+     * removed. Standard paths:
+     *   Let's Encrypt: /etc/letsencrypt/live/<domain>/fullchain.pem + privkey.pem
+     *   Paid SSL:      /etc/pki/tls/<files>
+     * $chainPath (paid only) adds SSLCertificateChainFile; $includeSslOptions
+     * adds the standard Include /etc/letsencrypt/options-ssl-apache.conf.
+     */
+    private function sslBuildSslVhostBlock(string $domain, string $docRoot, string $certPath, string $keyPath, ?string $chainPath, bool $includeSslOptions): string
+    {
+        $tpl = <<<'TXT'
+<IfModule mod_ssl.c>
+<VirtualHost *:443>
+        ServerName {DOMAIN}
+        ServerAlias www.{DOMAIN}
+        ServerAdmin webmaster@localhost
+        DocumentRoot {DOCROOT}
+
+        <Directory {DOCROOT}/>
+                Options Indexes FollowSymLinks MultiViews
+                AllowOverride All
+                Require all granted
+        </Directory>
+
+        ErrorLog ${APACHE_LOG_DIR}/error.log
+        CustomLog ${APACHE_LOG_DIR}/access.log combined
+
+{INCLUDE_OPTIONS}
+
+{SSL_LINES}
+</VirtualHost>
+</IfModule>
+TXT;
+
+        $sslLines = '        SSLCertificateFile ' . $certPath . "\n"
+            . '        SSLCertificateKeyFile ' . $keyPath;
+        if ($chainPath !== null) {
+            $sslLines .= "\n" . '        SSLCertificateChainFile ' . $chainPath;
+        }
+
+        return strtr($tpl, [
+            '{DOMAIN}' => $domain,
+            '{DOCROOT}' => $docRoot,
+            '{INCLUDE_OPTIONS}' => $includeSslOptions ? '        Include /etc/letsencrypt/options-ssl-apache.conf' : '',
+            '{SSL_LINES}' => $sslLines,
+        ]);
+    }
+
+    /**
+     * Insert the certbot-style HTTPS rewrite rules into the port-80
+     * VirtualHost serving $domain. Existing lines are never modified — the
+     * rules are only INSERTED before that vhost's closing </VirtualHost>.
+     *
+     * @return array{0:?string,1:string} [updated content (null = nothing to change), message]
+     */
+    private function sslInjectHttpsRewrite(string $content, string $domain): array
+    {
+        $lines = preg_split('/\r\n|\r|\n/', $content);
+        $n = count($lines);
+        $blocks = [];
+        for ($i = 0; $i < $n; $i++) {
+            if (preg_match('/<VirtualHost[^>]*>/i', $lines[$i])) {
+                $start = $i;
+                for ($j = $i + 1; $j < $n; $j++) {
+                    if (preg_match('/<\/VirtualHost\s*>/i', $lines[$j])) {
+                        $blocks[] = [$start, $j];
+                        $i = $j;
+                        break;
+                    }
+                }
+            }
+        }
+
+        foreach ($blocks as [$s, $e]) {
+            $blockText = implode("\n", array_slice($lines, $s, $e - $s + 1));
+            if (preg_match('/^\s*ServerName\s+' . preg_quote($domain, '/') . '\s*$/im', $blockText)) {
+                if (stripos($blockText, 'RewriteRule') !== false) {
+                    return [null, 'HTTPS redirect already present in the port-80 VirtualHost — left untouched'];
+                }
+                $insert = [
+                    'RewriteEngine on',
+                    'RewriteCond %{SERVER_NAME} =' . $domain . ' [OR]',
+                    'RewriteCond %{SERVER_NAME} =www.' . $domain,
+                    'RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]',
+                ];
+                array_splice($lines, $e, 0, $insert);
+                return [implode("\n", $lines), 'Added the HTTPS rewrite rules to the existing port-80 VirtualHost for ' . $domain];
+            }
+        }
+
+        return [null, "No port-80 VirtualHost found for {$domain} — no redirect rule was added (the https site itself is fully configured)"];
+    }
+
+    /**
+     * Clean the -le-ssl conf: certbot leaves commented-out redirect rules
+     * ("disabled on your HTTPS site … redirection loops") and sometimes
+     * misplaced *:80 copies of the vhost in it. This removes:
+     *   - certbot's comment noise (the two explanatory lines + commented
+     *     Rewrite* directives)
+     *   - *:80 VirtualHost blocks that belong to $domain (they live in the
+     *     port-80 config — a copy here is useless and confusing)
+     *   - any other vhost of $domain that does NOT use the standard
+     *     certificate path (broken certbot copies — replaced by the standard
+     *     block by the caller)
+     * EVERYTHING else (other domains!) is preserved untouched.
+     *
+     * @return array{0:string,1:array<string,bool>} [cleaned content, flags]
+     */
+    private function sslNormalizeLeSslConf(string $content, string $domain, string $stdCertLine): array
+    {
+        $lines = preg_split('/\r\n|\r|\n/', $content);
+        $n = count($lines);
+        $out = [];
+        $flags = ['noise_removed' => false, 'http_block_removed' => false, 'broken_block_removed' => false];
+
+        $isNoise = function (string $t): bool {
+            return (bool) (preg_match('/^#\s*Some rewrite rules in this file were disabled/i', $t)
+                || preg_match('/^#\s*because they have the potential/i', $t)
+                || preg_match('/^#\s*Rewrite(Engine|Cond|Rule)\b/i', $t));
+        };
+
+        for ($i = 0; $i < $n; $i++) {
+            $trimmed = trim($lines[$i]);
+
+            if ($isNoise($trimmed)) {
+                $flags['noise_removed'] = true;
+                continue;
+            }
+
+            if (preg_match('/<VirtualHost[^>]*>/i', $trimmed)) {
+                $end = $i;
+                for ($j = $i + 1; $j < $n; $j++) {
+                    if (preg_match('/<\/VirtualHost\s*>/i', trim($lines[$j]))) { $end = $j; break; }
+                }
+                $blockLines = array_slice($lines, $i, $end - $i + 1);
+                $blockText = implode("\n", $blockLines);
+
+                $isOurDomain = (bool) preg_match('/^\s*Server(Name|Alias)\s+' . preg_quote($domain, '/') . '\s*$/im', $blockText);
+                $isPort80 = (bool) preg_match('/<VirtualHost\s*\*:80\s*>/i', $blockText);
+
+                if ($isOurDomain && $isPort80) {
+                    $flags['http_block_removed'] = true;
+                } elseif ($isOurDomain && strpos($blockText, $stdCertLine) === false) {
+                    $flags['broken_block_removed'] = true;
+                } else {
+                    foreach ($blockLines as $bl) { $out[] = $bl; }
+                }
+                $i = $end;
+                continue;
+            }
+
+            $out[] = $lines[$i];
+        }
+
+        // collapse consecutive blank lines
+        $cleaned = [];
+        $blankRun = 0;
+        foreach ($out as $l) {
+            if (trim($l) === '') {
+                $blankRun++;
+                if ($blankRun > 1) continue;
+            } else {
+                $blankRun = 0;
+            }
+            $cleaned[] = $l;
+        }
+
+        return [implode("\n", $cleaned), $flags];
+    }
+
+    /**
+     * Normalize a DocumentRoot / <Directory> path: must be absolute, no
+     * whitespace, no '..', trailing slash removed. Returns null when invalid.
+     */
+    private function sslNormalizeDocroot(string $raw): ?string
+    {
+        $raw = rtrim(trim($raw), '/');
+        if ($raw === '' || $raw[0] !== '/' || strpos($raw, '..') !== false) { return null; }
+        if (preg_match('#\s#', $raw)) { return null; }
+        if (!preg_match('#^/[A-Za-z0-9._\-]+(?:/[A-Za-z0-9._\-]+)*$#', $raw)) { return null; }
+        return $raw;
+    }
+
+    /**
+     * Base name for the uploaded chain file: 'gd_bundle-g2-g1.crt' becomes
+     * 'gd_bundle-g2-g1' (path + extension stripped, unsafe characters replaced).
+     */
+    private function sslChainBase(?string $originalName): string
+    {
+        $base = $originalName === null ? '' : (string) pathinfo(basename($originalName), PATHINFO_FILENAME);
+        $base = preg_replace('/[^A-Za-z0-9._\-]+/', '_', $base);
+        $base = trim((string) $base, '._-');
+        return $base !== '' ? $base : 'chain';
+    }
+
+    /**
+     * Build a port-80 VirtualHost block (certbot-style, with the https
+     * rewrite rules) — used when a domain has no VirtualHost yet so certbot
+     * can find it and the DocumentRoot / <Directory> point to the chosen
+     * project directory.
+     */
+    private function sslBuildPort80Vhost(string $domain, string $docRoot): string
+    {
+        $tpl = <<<'TXT'
+<VirtualHost *:80>
+        ServerName {DOMAIN}
+        ServerAlias www.{DOMAIN}
+        ServerAdmin webmaster@localhost
+        DocumentRoot {DOCROOT}
+
+<Directory {DOCROOT}/>
+        Options Indexes FollowSymLinks MultiViews
+        AllowOverride All
+        Require all granted
+</Directory>
+
+        ErrorLog ${APACHE_LOG_DIR}/error.log
+        CustomLog ${APACHE_LOG_DIR}/access.log combined
+
+RewriteEngine on
+RewriteCond %{SERVER_NAME} ={DOMAIN} [OR]
+RewriteCond %{SERVER_NAME} =www.{DOMAIN}
+RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+</VirtualHost>
+TXT;
+
+        return strtr($tpl, ['{DOMAIN}' => $domain, '{DOCROOT}' => $docRoot]);
+    }
+
+    /**
+     * Undo everything: remove the files created by the run and restore the
+     * backed-up originals of every modified config file.
+     */
+    private function sslRollback(string $base, array $backups, array $createdFiles, ?string &$log = null): void
+    {
+        $logs = [];
+        foreach ($createdFiles as $f) {
+            $this->sslRun($base, 'rm -f ' . $f . ' 2>/dev/null; echo REMOVED', 30);
+            $logs[] = 'Removed ' . $f;
+        }
+        foreach ($backups as $original => $bakPath) {
+            $this->sslRun($base, 'cp -a ' . $bakPath . ' ' . $original . ' && echo RESTORED', 30);
+            $logs[] = 'Restored ' . $original;
+        }
+        $log = implode("\n", $logs);
+    }
 }
