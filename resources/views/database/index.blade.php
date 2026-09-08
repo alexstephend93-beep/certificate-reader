@@ -147,9 +147,21 @@
                             <span class="visually-hidden">unread messages</span>
                         </span>
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="exportDatabase()" title="Export Database">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="testAllConnections()" title="Test All Saved Connections">
+                        <i class="bi bi-shield-check"></i> Test All
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="exportDatabase()" title="Export Database Data">
                         <i class="bi bi-download"></i> Export
                     </button>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-outline-dark dropdown-toggle" data-bs-toggle="dropdown" title="Credential Export / Import">
+                            <i class="bi bi-key"></i> Credentials
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item" href="#" onclick="exportCredentials()"><i class="bi bi-box-arrow-down me-2"></i>Export Credentials (JSON)</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="importCredentials()"><i class="bi bi-box-arrow-in-up me-2"></i>Import Credentials (JSON)</a></li>
+                        </ul>
+                    </div>
                     <button type="button" class="btn btn-sm btn-outline-warning" onclick="showRunningQueries()" title="Running Queries">
                         <i class="bi bi-hourglass-split"></i> Queries
                     </button>

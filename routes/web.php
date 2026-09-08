@@ -146,6 +146,7 @@ Route::prefix('ssh')->group(function () {
     
     // Database Credential Import from SSH
     Route::post('/import-db-single', [SshController::class, 'importDbFromServer'])->name('ssh.import-db.single');
+    Route::post('/scan-projects', [SshController::class, 'scanProjects'])->name('ssh.scan-projects');
     Route::get('/import-db-status', [SshController::class, 'getImportPendingCount'])->name('ssh.import-db.status');
     Route::get('/list-with-domains', [SshController::class, 'getServersWithDomains'])->name('ssh.list-with-domains');
     
@@ -225,6 +226,10 @@ Route::prefix('database')->name('database.')->group(function () {
     Route::match(['GET', 'POST'], '/export-data', [DatabaseController::class, 'exportData'])->name('database.export.data');
     Route::get('/table-details/{id}/{table}', [DatabaseController::class, 'getTableDetails'])->name('database.table.details');
     Route::get('/table-data/{id}/{table}', [DatabaseController::class, 'getTableData'])->name('database.table.data');
+    Route::get('/all', [DatabaseController::class, 'getAll'])->name('all');
+    Route::post('/test-all', [DatabaseController::class, 'testAll'])->name('test.all');
+    Route::get('/export-credentials', [DatabaseController::class, 'exportCredentials'])->name('export.credentials');
+    Route::post('/import-credentials', [DatabaseController::class, 'importCredentials'])->name('import.credentials');
 });
 
 
@@ -259,4 +264,20 @@ Route::prefix('system-monitor')->group(function () {
     Route::post('/free-memory', [SystemMonitorController::class, 'freeMemory'])->name('system-monitor.free-memory');
     Route::post('/kill-low-priority-only', [SystemMonitorController::class, 'killLowPriorityOnly']);
     Route::post('/clear-chrome-low-priority', [SystemMonitorController::class, 'clearChromeLowPriority']);
+});
+
+
+
+use App\Http\Controllers\PayInstantSQLController;
+
+Route::prefix('database')->name('database.')->group(function () {
+    Route::get('/payinstant-sql', [PayInstantSQLController::class, 'index'])->name('payinstant.sql');
+    Route::post('/payinstant-sql/generate', [PayInstantSQLController::class, 'generate'])->name('payinstant.sql.generate');
+    Route::get('/payinstant-sql/gateway/{identifier}', [PayInstantSQLController::class, 'getGateway'])->name('payinstant.sql.gateway');
+    Route::get('/payinstant-sql/gateway-prefix/{prefix}', [PayInstantSQLController::class, 'getGatewayByPrefix'])->name('payinstant.sql.gateway.prefix');
+    Route::get('/payinstant-sql/gateway-accounts/{identifier}', [PayInstantSQLController::class, 'getGatewayAccounts'])->name('payinstant.sql.gateway.accounts');
+    Route::get('/payinstant-sql/gateway-by-virtual-name/{virtualAccountName}', [PayInstantSQLController::class, 'getGatewayByVirtualName'])->name('payinstant.sql.gateway.virtual');
+    Route::get('/payinstant-sql/resolve-ip', [PayInstantSQLController::class, 'resolveIp'])->name('payinstant.sql.resolve.ip');
+    Route::delete('/payinstant-sql/account', [PayInstantSQLController::class, 'deleteAccount'])->name('payinstant.sql.account.delete');
+    Route::post('/payinstant-sql/save', [PayInstantSQLController::class, 'saveToDatabase'])->name('payinstant.sql.save');
 });

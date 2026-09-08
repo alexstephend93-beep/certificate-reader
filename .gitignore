@@ -23,3 +23,5 @@ Homestead.json
 Homestead.yaml
 Thumbs.db
 /storage/numlock_count.txt
+__pycache__/
+*.pyc

@@ -114,8 +114,8 @@ function fetchPhpMyAdminInfo(credentialId) {
             
             // phpMyAdmin URL(s)
             let phpmyadminUrl = data.domain_url;
-            if (data.database_username && (data.database_username.toUpperCase() === 'PAYMENTS_ADMIN' || data.database_username.toUpperCase() === 'PAYTEST_ADMIN')) {
-                phpmyadminUrl = 'https://admin.paytest.in/phpmyadmin';
+            if (data.database_username && (data.database_username.toUpperCase() === 'PAYMENTS_ADMIN' || data.database_username.toUpperCase() === 'PAYTEST')) {
+                phpmyadminUrl = 'https://admin.paytest.in/SeccureCon/';
             }
             if (phpmyadminUrl) {
                 html += `
@@ -242,7 +242,7 @@ function setupModalCleanup() {
 
 // ADDED: Function to close all modals
 function closeAllModals() {
-    const modals = ['dbModal', 'manageConnectionsModal', 'runningQueriesModal', 'activeConnectionsModal', 'tableDetailsModal'];
+    const modals = ['dbModal', 'manageConnectionsModal', 'runningQueriesModal', 'activeConnectionsModal', 'tableDetailsModal', 'sshScanModal', 'testAllModal'];
     modals.forEach(modalId => {
         const modalElement = document.getElementById(modalId);
         if (modalElement) {
@@ -1439,9 +1439,25 @@ function openDbModal(connectionId = null) {
     }
 }
 
-// UPDATED: Manage Connections function
+// Update the table body empty state and load the connection list into the manage modal
 function manageConnections() {
     showSingleModal('manageConnectionsModal');
+    refreshConnectionList();
+}
+
+// Filter the manage connections table by search query
+function filterConnections(query) {
+    query = (query || '').toLowerCase().trim();
+    const rows = document.querySelectorAll('#connectionsTableBody tr');
+    let visible = 0;
+    rows.forEach(row => {
+        const rowText = row.textContent.toLowerCase();
+        const match = !query || rowText.includes(query);
+        row.style.display = match ? '' : 'none';
+        if (match) visible++;
+    });
+    const empty = document.getElementById('connectionsEmpty');
+    if (empty) empty.classList.toggle('d-none', visible > 0);
 }
 
 function resetDbForm() {
@@ -1455,6 +1471,7 @@ function resetDbForm() {
     document.getElementById('dbPassword').value = '';
     document.getElementById('dbNotes').value = '';
     document.getElementById('dbIsDefault').checked = false;
+    document.getElementById('dbSshHost').value = '';
     const testResultMsg = document.getElementById('testResultMsg');
     if (testResultMsg) {
         testResultMsg.style.display = 'none';
@@ -1477,6 +1494,7 @@ function loadConnectionData(id) {
                 document.getElementById('dbPassword').value = '';
                 document.getElementById('dbNotes').value = conn.notes || '';
                 document.getElementById('dbIsDefault').checked = conn.is_default == 1;
+                document.getElementById('dbSshHost').value = conn.ssh_host || '';
             }
         })
         .catch(error => {
@@ -1554,7 +1572,8 @@ function getDbFormData() {
         username: document.getElementById('dbUsername').value,
         password: document.getElementById('dbPassword').value,
         notes: document.getElementById('dbNotes').value,
-        is_default: document.getElementById('dbIsDefault').checked ? 1 : 0
+        is_default: document.getElementById('dbIsDefault').checked ? 1 : 0,
+        ssh_host: document.getElementById('dbSshHost').value
     };
 }
 
@@ -1894,16 +1913,24 @@ function closeQueryModalAndRun() {
 // SSH DB IMPORT FUNCTIONALITY
 // ============================================
 
+// ============================================
+// SSH DB CREDENTIAL IMPORT (TWO-PHASE: SCAN -> PREVIEW -> IMPORT)
+// ============================================
+
+let sshScanResults = [];       // { server, projects: [...] }
+let sshScanServers = [];       // servers being processed
+
 /**
- * Open import modal and load pending count
+ * Open the Import from SSH flow: first scans every SSH server for projects
+ * with .env files, reports the discovered database configs (and whether each
+ * DB exists), then lets the user preview + start the import.
  */
-function openImportFromSshModal() {
-    // Fetch pending count
+async function openImportFromSshModal() {
+    // Refresh pending badge
     fetch('/ssh/import-db-status')
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                // Update badge on button
                 const badge = document.getElementById('importPendingBadge');
                 if (data.pending_count > 0) {
                     badge.textContent = data.pending_count;
@@ -1911,82 +1938,240 @@ function openImportFromSshModal() {
                 } else {
                     badge.style.display = 'none';
                 }
-                
-                if (data.pending_count === 0) {
-                    showToast('✅ All domains already imported. No pending imports.', 'success');
-                    return;
-                }
-                
-                // Show modal and start import
-                showSingleModal('importDbModal');
-                setTimeout(startSshDbImport, 500);
             }
         })
-        .catch(err => {
-            console.error('Failed to get import status:', err);
-            showToast('Could not check import status', 'warning');
-            showSingleModal('importDbModal');
-        });
+        .catch(() => {});
+
+    // Show scan modal and start scanning
+    showSingleModal('sshScanModal');
+    scanSshServers();
 }
 
 /**
- * Start the import process from all SSH servers with domains
+ * Scan all SSH servers for project directories + .env DB configs (no storing).
  */
-async function startSshDbImport() {
-    // Reset progress
-    sshImportCancelled = false;
-    sshImportProgress = { current: 0, total: 0, imported: 0, skipped: 0, errors: [] };
-    sshImportServers = [];
-    
-    // Get all servers with domains from the global allServers array (populated by ssh page)
-    // Since we're on Database Manager page, we need to fetch the server list
+async function scanSshServers() {
+    sshScanResults = [];
+    sshScanServers = [];
+
+    const scanTable = document.getElementById('sshScanResults');
+    const scannedCount = document.getElementById('sshScannedCount');
+    if (scannedCount) scannedCount.textContent = '0';
+
+    setScanUi(true, 'Loading SSH server list...');
+
     try {
         const response = await fetch('/ssh/list-with-domains');
         const data = await response.json();
-        
+
         if (!data.success || !Array.isArray(data.servers)) {
+            setScanUi(false, 'Could not load SSH servers list');
             showToast('Could not load SSH servers list', 'warning');
             return;
         }
-        
-        sshImportServers = data.servers.filter(s => s.domains && s.domains.length > 0);
+
+        // Scan ALL servers - directory scanning is the source of truth,
+        // so we don't restrict to servers that have domains configured.
+        sshScanServers = data.servers;
+        if (sshScanServers.length === 0) {
+            setScanUi(false, 'No SSH servers found in config');
+            return;
+        }
+
+        if (scanTable) scanTable.innerHTML = '';
+
+        for (const server of sshScanServers) {
+            setScanUi(true, `Scanning ${server.host} (${server.hostname})...`);
+
+            try {
+                const res = await fetch('/ssh/scan-projects', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf_token },
+                    body: JSON.stringify(server)
+                });
+                const result = await res.json();
+
+                if (result.success) {
+                    sshScanResults.push({ server, projects: result.projects || [] });
+                } else {
+                    sshScanResults.push({ server, projects: [], error: result.message || 'Scan failed' });
+                }
+            } catch (err) {
+                sshScanResults.push({ server, projects: [], error: err.message || 'Scan failed' });
+            }
+
+            if (scannedCount) scannedCount.textContent = sshScanResults.length;
+        }
+
+        renderScanResults();
+        setScanUi(false, 'Scan complete - review the results below.');
+    } catch (error) {
+        console.error('Scan error:', error);
+        setScanUi(false, 'Scan failed: ' + error.message);
+    }
+}
+
+/**
+ * Render the scan preview table into the scan modal.
+ */
+function renderScanResults() {
+    const scanTable = document.getElementById('sshScanResults');
+    let totalProjects = 0, ready = 0, dbMissing = 0, unreachable = 0, already = 0, noConfig = 0;
+
+    sshScanResults.forEach(entry => {
+        entry.projects.forEach(p => {
+            totalProjects++;
+            if (p.status === 'ready') ready++;
+            else if (p.status === 'db-missing') dbMissing++;
+            else if (p.status === 'unreachable') unreachable++;
+            else if (p.status === 'already-imported') already++;
+            else noConfig++;
+        });
+    });
+
+    document.getElementById('sshScanTotal').textContent = totalProjects;
+    document.getElementById('sshScanReady').textContent = ready;
+    document.getElementById('sshScanMissing').textContent = dbMissing;
+    document.getElementById('sshScanUnreachable').textContent = unreachable;
+    document.getElementById('sshScanAlready').textContent = already;
+
+    document.getElementById('sshScanSummary').innerHTML =
+        `${totalProjects} project(s) found. <strong class="text-success">${ready}</strong> ready to import, ` +
+        `<span class="text-warning">${dbMissing}</span> skipped (DB missing), ` +
+        `<span class="text-danger">${unreachable}</span> unreachable, ` +
+        `<span class="text-secondary">${already}</span> already imported.`;
+
+    let html = '';
+    if (sshScanResults.length === 0) {
+        html = '<div class="text-center text-muted py-5"><i class="bi bi-search fs-1"></i><p class="mt-2">No SSH servers found to scan.</p></div>';
+    } else {
+        sshScanResults.forEach(entry => {
+            const badge = entry.projects.length > 0
+                ? `<span class="badge bg-info">${entry.projects.length} project(s)</span>`
+                : `<span class="badge bg-secondary">no projects</span>`;
+            html += `
+                <tr class="table-secondary">
+                    <td colspan="5">
+                        <i class="bi bi-hdd-network me-2"></i><strong>${escapeHtml(entry.server.host)}</strong>
+                        <small class="text-muted ms-2">(${escapeHtml(entry.server.hostname)})</small>
+                        ${badge}
+                        ${entry.error ? `<small class="text-danger ms-2">${escapeHtml(entry.error)}</small>` : ''}
+                    </td>
+                </tr>`;
+
+            if (entry.projects.length === 0) {
+                html += '<tr><td colspan="5" class="text-muted small">No directories with .env found via SSH scan.</td></tr>';
+            } else {
+                entry.projects.forEach(p => {
+                    html += `
+                        <tr>
+                            <td><code class="small">${escapeHtml(p.project_path)}</code></td>
+                            <td><code class="small">${escapeHtml(p.database || '-')}</code></td>
+                            <td class="small">${escapeHtml(p.username || '-')}<br><small class="text-muted">${escapeHtml(p.host || '')}:${escapeHtml(p.port || '')}</small></td>
+                            <td class="small">${escapeHtml((p.connection || 'mysql').toUpperCase())}</td>
+                            <td>${statusBadgeHtml(p.status)}</td>
+                        </tr>`;
+                });
+            }
+        });
+    }
+    if (scanTable) scanTable.innerHTML = html;
+
+    const startBtn = document.getElementById('startImportBtn');
+    if (startBtn) startBtn.disabled = ready === 0;
+}
+
+function statusBadgeHtml(status) {
+    switch (status) {
+        case 'ready': return '<span class="badge bg-success">Ready</span>';
+        case 'connection-failed': return '<span class="badge bg-danger">Connection Failed</span>';
+        case 'db-missing': return '<span class="badge bg-warning text-dark">DB Missing</span>';
+        case 'unreachable': return '<span class="badge bg-danger">Unreachable</span>';
+        case 'already-imported': return '<span class="badge bg-secondary">Already Imported</span>';
+        case 'no-db-config': return '<span class="badge bg-dark">No DB Config</span>';
+        default: return '<span class="badge bg-secondary">Unknown</span>';
+    }
+}
+
+function setScanUi(scanning, statusText) {
+    const status = document.getElementById('sshScanStatus');
+    const spinner = document.getElementById('sshScanSpinner');
+    if (status) status.textContent = statusText || '';
+    if (spinner) spinner.style.display = scanning ? 'inline-block' : 'none';
+    const startBtn = document.getElementById('startImportBtn');
+    if (startBtn) startBtn.disabled = true;
+    const rescanBtn = document.getElementById('rescanBtn');
+    if (rescanBtn) rescanBtn.disabled = scanning;
+}
+
+/**
+ * Start the actual import after the user confirms the scan preview.
+ */
+function startImportFromScan() {
+    const scanModalEl = document.getElementById('sshScanModal');
+    if (scanModalEl) {
+        const inst = bootstrap.Modal.getInstance(scanModalEl);
+        if (inst) inst.hide();
+    }
+    setTimeout(() => {
+        showSingleModal('importDbModal');
+        startSshDbImport(sshScanServers);
+    }, 300);
+}
+
+/**
+ * Start the import process from the scanned (or passed) SSH servers.
+ * The improved backend reads .env -> checks DB exists -> verifies connection
+ * -> stores ONLY on success (and skips DBs that don't exist).
+ */
+async function startSshDbImport(servers) {
+    // Reset progress
+    sshImportCancelled = false;
+    sshImportProgress = { current: 0, total: 0, imported: 0, skipped: 0, errors: [] };
+    sshImportServers = servers || [];
+
+    try {
+        if (!sshImportServers.length) {
+            const response = await fetch('/ssh/list-with-domains');
+            const data = await response.json();
+            if (!data.success || !Array.isArray(data.servers)) {
+                showToast('Could not load SSH servers list', 'warning');
+                return;
+            }
+            sshImportServers = data.servers;
+        }
+
         sshImportProgress.total = sshImportServers.length;
-        
+
         if (sshImportServers.length === 0) {
-            showToast('No SSH servers with domains found', 'warning');
+            showToast('No SSH servers found', 'warning');
             bootstrap.Modal.getInstance(document.getElementById('importDbModal')).hide();
             return;
         }
-        
-        // Update initial UI
+
         updateImportStats();
         updateImportUI('Starting import...');
-        
-        // Disable close button during import
+
         document.getElementById('closeImportBtn').disabled = true;
         document.getElementById('cancelImportBtn').disabled = false;
-        
-        // Process sequentially
+
         for (const server of sshImportServers) {
             if (sshImportCancelled) {
                 showToast('Import cancelled', 'info');
                 break;
             }
-            
+
             updateImportUI(`Processing: ${server.host} (${server.hostname})`);
-            
+
             try {
                 const res = await fetch('/ssh/import-db-single', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': csrf_token
-                    },
-                    body: JSON.stringify(server)
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf_token },
+                    body: JSON.stringify({ ...server, force: false })
                 });
-                
+
                 const result = await res.json();
-                
+
                 if (result.success) {
                     sshImportProgress.imported += result.imported_count || 0;
                     sshImportProgress.skipped += result.skipped_count || 0;
@@ -1994,32 +2179,29 @@ async function startSshDbImport() {
                         sshImportProgress.errors.push(...result.errors);
                     }
                     if (result.domains_imported && result.domains_imported.length > 0) {
-                        updateImportUI(`✅ Imported from ${server.host}: ${result.domains_imported.join(', ')}`);
+                        updateImportUI(`Imported ${result.domains_imported.length} from ${server.host}: ${result.domains_imported.slice(0, 3).join(', ')}...`);
                     } else {
-                        updateImportUI(`ℹ️ ${server.host}: ${result.message || 'No new imports'}`);
+                        updateImportUI(`${server.host}: ${(result.errors && result.errors[0]) || result.message || 'No new imports'}`);
                     }
                 } else {
                     sshImportProgress.skipped++;
                     sshImportProgress.errors.push(`${server.host}: ${result.message}`);
-                    updateImportUI(`❌ Failed: ${server.host}`);
+                    updateImportUI(`Failed: ${server.host}`);
                 }
-                
             } catch (err) {
                 sshImportProgress.skipped++;
                 sshImportProgress.errors.push(`${server.host}: ${err.message}`);
-                updateImportUI(`❌ Error: ${server.host}`);
+                updateImportUI(`Error: ${server.host}`);
             }
-            
+
             sshImportProgress.current++;
             updateImportStats();
-            
+
             // Small delay to avoid overwhelming
             await new Promise(resolve => setTimeout(resolve, 200));
         }
-        
-        // Complete
+
         showImportSummary();
-        
     } catch (error) {
         console.error('Import error:', error);
         showToast('Import process failed: ' + error.message, 'danger');
@@ -2041,7 +2223,7 @@ function updateImportUI(message) {
 function updateImportStats() {
     const p = sshImportProgress;
     const percent = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
-    
+
     document.getElementById('importProgressBar').style.width = percent + '%';
     document.getElementById('importPercent').textContent = percent + '%';
     document.getElementById('importedCount').textContent = p.imported;
@@ -2062,10 +2244,9 @@ function cancelSshDbImport() {
  * Show final summary after import completes
  */
 function showImportSummary() {
-    // Enable close button, disable cancel
     document.getElementById('closeImportBtn').disabled = false;
     document.getElementById('cancelImportBtn').style.display = 'none';
-    
+
     const p = sshImportProgress;
     let summary = `
         <div class="text-center mb-3">
@@ -2083,12 +2264,11 @@ function showImportSummary() {
             </div>
         </div>
     `;
-    
-    // If there were errors, show them
+
     if (p.errors.length > 0) {
         summary += `
             <div class="border-top pt-3 mt-2">
-                <small class="text-danger fw-bold"><i class="bi bi-exclamation-triangle me-1"></i>Errors (first 10):</small>
+                <small class="text-danger fw-bold"><i class="bi bi-exclamation-triangle me-1"></i>Details (first 10):</small>
                 <ul class="mb-0 small text-danger" style="max-height: 200px; overflow-y: auto;">
         `;
         p.errors.slice(0, 10).forEach(err => {
@@ -2099,33 +2279,119 @@ function showImportSummary() {
         }
         summary += `</ul></div>`;
     }
-    
-    // Replace modal body content temporarily
+
     const modalBody = document.querySelector('#importDbModal .modal-body');
     const originalContent = modalBody.innerHTML;
     modalBody.innerHTML = summary;
-    
-    // Re-enable close button
+
     document.getElementById('closeImportBtn').disabled = false;
-    
-    // On modal hide, restore original content
+
     document.getElementById('importDbModal').addEventListener('hidden.bs.modal', function restore() {
         modalBody.innerHTML = originalContent;
         document.getElementById('importDbModal').removeEventListener('hidden.bs.modal', restore);
-        // Reset cancel button for next time
         document.getElementById('cancelImportBtn').style.display = 'block';
         document.getElementById('cancelImportBtn').disabled = false;
         document.getElementById('cancelImportBtn').innerHTML = '<i class="bi bi-x-circle me-1"></i> Cancel';
     }, { once: true });
-    
+
     if (p.imported > 0) {
         showToast(`Successfully imported ${p.imported} database credential(s)`, 'success');
-        // Refresh the database connections dropdown
-        setTimeout(() => location.reload(), 1500);
+        setTimeout(() => refreshConnectionList(), 1200);
     } else {
         showToast('No new credentials were imported', 'warning');
     }
 }
+
+/**
+ * Rebuild the database dropdown + manage table from the server, without reloading.
+ */
+async function refreshConnectionList() {
+    try {
+        // Show loading state in the manage table
+        const loadingTbody = document.getElementById('connectionsTableBody');
+        if (loadingTbody) {
+            loadingTbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Loading connections...</td></tr>';
+        }
+        const emptyLoading = document.getElementById('connectionsEmpty');
+        if (emptyLoading) emptyLoading.classList.add('d-none');
+
+        const res = await fetch('/database/all');
+        const data = await res.json();
+        if (!data.success || !Array.isArray(data.databases)) return;
+
+        const dbs = data.databases;
+
+        // Rebuild the select dropdown (keep selected id if still present)
+        const select = document.getElementById('dbConnection');
+        const currentVal = select.value;
+        const currentOptionsPreserved = dbs.some(d => String(d.id) === String(currentVal));
+
+        let options = '<option value="">-- Select Database --</option>';
+        dbs.forEach(d => {
+            const selected = !currentOptionsPreserved && d.is_default ? 'selected' : (currentOptionsPreserved && String(d.id) === String(currentVal) ? 'selected' : '');
+            options += `<option value="${d.id}" ${selected}>${escapeHtml(d.name)} (${escapeHtml(String(d.connection_name || 'mysql').toUpperCase())}) - ${escapeHtml(d.database)}${d.is_default ? ' ⭐' : ''}</option>`;
+        });
+        select.innerHTML = options;
+
+        // Reinitialize Select2 if it is in use (e.g., after an import added new options)
+        if (window.$ && $.fn.select2) {
+            if ($(select).hasClass('select2-hidden-accessible')) {
+                $(select).select2('destroy');
+            }
+            $(select).select2({
+                theme: 'bootstrap-5',
+                width: '100%',
+                placeholder: '-- Select Database --',
+                allowClear: false,
+                minimumResultsForSearch: 0,
+                dropdownAutoWidth: true,
+                language: {
+                    noResults: function() { return "No databases found"; },
+                    searching: function() { return "Searching..."; }
+                }
+            });
+        }
+
+        // Rebuild the manage table
+        const tbody = document.getElementById('connectionsTableBody');
+        if (tbody) {
+            let rows = '';
+            dbs.forEach(d => {
+                const statusBadge = d.is_active
+                    ? '<span class="badge bg-success">Active</span>'
+                    : '<span class="badge bg-danger">Inactive</span>';
+                rows += `
+                    <tr>
+                        <td>
+                            <div class="d-flex align-items-center gap-2">
+                                <i class="bi bi-database"></i>
+                                <strong>${escapeHtml(d.name)}</strong>
+                                ${d.is_default ? '<span class="badge bg-warning text-dark">Default</span>' : ''}
+                            </div>
+                        </td>
+                        <td><span class="badge bg-info">${escapeHtml(String(d.connection_name || 'mysql').toUpperCase())}</span></td>
+                        <td><code>${escapeHtml(d.host)}:${escapeHtml(d.port)}</code></td>
+                        <td>${escapeHtml(d.database)}</td>
+                        <td>${statusBadge}</td>
+                        <td>
+                            <div class="btn-group btn-group-sm" role="group">
+                                ${!d.is_default ? `<button type="button" class="btn btn-outline-warning" onclick="setDefaultConnection(${d.id})" title="Set as Default"><i class="bi bi-star-fill"></i></button>` : ''}
+                                <button type="button" class="btn btn-outline-primary" onclick="editConnection(${d.id})" title="Edit Connection"><i class="bi bi-pencil-fill"></i></button>
+                                <button type="button" class="btn btn-outline-danger" onclick="deleteConnection(${d.id}, '${escapeHtml(d.name).replace(/'/g, "\\'")}')" title="Delete Connection"><i class="bi bi-trash-fill"></i></button>
+                            </div>
+                        </td>
+                    </tr>`;
+            });
+            tbody.innerHTML = rows;
+
+            const emptyEl = document.getElementById('connectionsEmpty');
+            if (emptyEl) emptyEl.classList.toggle('d-none', dbs.length > 0);
+        }
+    } catch (e) {
+        console.error('Failed to refresh connection list:', e);
+    }
+}
+
 
 // Utility Functions
 function refreshTables() {
@@ -2207,6 +2473,124 @@ function previewTableData(tableName) {
         });
 }
 
+// ============================================
+// DB MANAGER FEATURES: Test All / Export / Import Credentials
+// ============================================
+
+/**
+ * Test every stored database connection and show a results table.
+ */
+async function testAllConnections() {
+    const body = document.getElementById('testAllBody');
+    body.innerHTML = `
+        <div class="text-center py-4">
+            <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
+            <p class="mt-3 text-muted">Testing all database connections...</p>
+        </div>`;
+    showSingleModal('testAllModal');
+
+    try {
+        const res = await fetch('/database/test-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf_token },
+            body: JSON.stringify({})
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            body.innerHTML = `<div class="alert alert-danger">${escapeHtml(data.message || 'Batch test failed')}</div>`;
+            return;
+        }
+
+        let rows = '';
+        data.results.forEach(r => {
+            const icon = r.success
+                ? '<i class="bi bi-check-circle-fill text-success"></i>'
+                : '<i class="bi bi-x-circle-fill text-danger"></i>';
+            const status = r.success
+                ? `<span class="badge bg-success">OK (${r.response_time_ms}ms)</span>`
+                : `<span class="badge bg-danger">Failed</span>`;
+            const error = r.error ? `<br><small class="text-danger">${escapeHtml(r.error)}</small>` : '';
+            rows += `
+                <tr>
+                    <td>${icon} <strong>${escapeHtml(r.name)}</strong></td>
+                    <td class="small">${escapeHtml(r.database)}</td>
+                    <td class="small"><code>${escapeHtml(r.host)}</code><br><small class="text-muted">${escapeHtml(r.username)}</small></td>
+                    <td class="small">${escapeHtml(String(r.connection_name || '').toUpperCase())}</td>
+                    <td>${status}${error}</td>
+                </tr>`;
+        });
+
+        body.innerHTML = `
+            <div class="mb-3 d-flex align-items-center">
+                <span class="badge bg-primary fs-6 me-2">${data.total} total</span>
+                <span class="badge bg-success fs-6 me-2">${data.passed} passed</span>
+                <span class="badge bg-danger fs-6">${data.failed} failed</span>
+            </div>
+            <div class="table-responsive" style="max-height: 480px; overflow-y: auto;">
+                <table class="table table-bordered table-striped table-sm">
+                    <thead class="table-light sticky-top">
+                        <tr><th>Name</th><th>Database</th><th>Host (User)</th><th>Type</th><th>Status</th></tr>
+                    </thead>
+                    <tbody id="testAllRows">${rows || '<tr><td colspan="5" class="text-center">No connections stored</td></tr>'}</tbody>
+                </table>
+            </div>`;
+
+        // Refresh status badges shown in the page
+        await refreshConnectionList();
+    } catch (err) {
+        body.innerHTML = `<div class="alert alert-danger">Failed to run batch test: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+/**
+ * Download all stored DB credentials as JSON (passwords excluded).
+ */
+function exportCredentials() {
+    window.open('/database/export-credentials', '_blank');
+}
+
+/**
+ * Select a JSON export file and import credentials (each is connection-tested).
+ */
+function importCredentials() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async function () {
+        if (!input.files.length) return;
+        const file = input.files[0];
+        try {
+            const text = await file.text();
+            const parsed = JSON.parse(text);
+            const list = Array.isArray(parsed) ? parsed : (parsed.credentials || []);
+            if (!list.length) {
+                showToast('No credentials found in the selected file', 'warning');
+                return;
+            }
+
+            const res = await fetch('/database/import-credentials', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf_token },
+                body: JSON.stringify({ credentials: list })
+            });
+            const data = await res.json();
+            if (!data.success) {
+                showToast(data.message || 'Import failed', 'danger');
+                return;
+            }
+            showToast(`Imported ${data.imported} credential(s), skipped ${data.skipped}`, data.imported > 0 ? 'success' : 'warning');
+            if (data.errors && data.errors.length) {
+                console.warn('Import details:', data.errors);
+            }
+            await refreshConnectionList();
+        } catch (e) {
+            showToast('Invalid JSON file: ' + e.message, 'danger');
+        }
+    };
+    input.click();
+}
+
 // ADDED: Export for new functions
 window.openAddConnectionModal = openAddConnectionModal;
 window.closeAllModals = closeAllModals;
@@ -2249,4 +2633,12 @@ window.cancelSshDbImport = cancelSshDbImport;
 window.fetchPhpMyAdminInfo = fetchPhpMyAdminInfo;
 window.togglePass = togglePass;
 window.copyToClipboard = copyToClipboard;
+window.scanSshServers = scanSshServers;
+window.startImportFromScan = startImportFromScan;
+window.renderScanResults = renderScanResults;
+window.refreshConnectionList = refreshConnectionList;
+window.testAllConnections = testAllConnections;
+window.exportCredentials = exportCredentials;
+window.importCredentials = importCredentials;
+window.filterConnections = filterConnections;
 window.loadTableDetails = loadTableDetails;

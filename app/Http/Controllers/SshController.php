@@ -3599,196 +3599,190 @@ class SshController extends Controller
             $hostConfig = $request->only(['host', 'hostname', 'user', 'identity_file', 'port']);
             $hostConfig['port'] = $hostConfig['port'] ?? 22;
             $hostConfig['user'] = $hostConfig['user'] ?? 'ubuntu';
-            
+
             // Get domains for this server
             $allHosts = $this->parseSshConfigWithDomains();
             $thisHost = collect($allHosts)->firstWhere('host', $request->host);
             $domains = $thisHost['domains'] ?? $request->domains ?? [];
-            
-            if (empty($domains)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Server '{$request->host}' has no domains configured"
-                ]);
-            }
-            
+
             // Connect to SSH server
             $ssh = $this->connectToServer($hostConfig);
-            
-            // Get Apache config (multiple path attempts)
+
+            // STEP 1: Discover project directories by scanning the server's web roots for .env files.
+            // This reads the project directory directly (primary source of truth).
+            $discovery = $this->discoverProjectEnvFiles($ssh);
+
+            // STEP 2 (fallback): Also discover projects via Apache config / domains.
             $configContent = $this->getApacheConfigFromServer($ssh);
-            if (!$configContent) {
+            if ($configContent) {
+                foreach ($domains as $domain) {
+                    try {
+                        $docRoot = $this->findDocumentRootInConfig($configContent, $domain);
+                        if (!$docRoot) {
+                            continue;
+                        }
+                        $projectPath = $this->extractProjectPath($docRoot);
+                        $envPath = $this->findEnvFile($ssh, $projectPath);
+                        if ($envPath && !in_array($envPath, $discovery['env_paths'])) {
+                            $discovery['env_paths'][] = $envPath;
+                            $discovery['projects'][] = [
+                                'env_path' => $envPath,
+                                'project_path' => $projectPath,
+                                'source' => "domain: {$domain}",
+                                'domain' => $domain,
+                            ];
+                        }
+                    } catch (\Exception $e) {
+                        // Ignore domain discovery errors - directory scanning is the primary method
+                    }
+                }
+            }
+
+            if (empty($discovery['projects'])) {
                 return response()->json([
-                    'success' => false,
-                    'message' => 'Could not read Apache config from server'
+                    'success' => true,
+                    'host' => $request->host,
+                    'imported_count' => 0,
+                    'skipped_count' => 0,
+                    'domains_imported' => [],
+                    'domains_skipped' => [],
+                    'projects_found' => 0,
+                    'errors' => ['No project directories with .env files were found on server ' . $request->host]
                 ]);
             }
-            
+
             $results = [
                 'imported' => [],
                 'skipped' => [],
                 'errors' => []
             ];
-            
-            foreach ($domains as $domain) {
+
+            foreach ($discovery['projects'] as $project) {
+                $envPath = $project['env_path'];
+                $projectPath = $project['project_path'];
+                $source = $project['source'];
+
+                // For the import log, use the domain if this project came from a domain,
+                // otherwise fall back to the project folder name (keeps unique(ssh_host, domain) valid)
+                $logDomain = $project['domain'] ?? basename($projectPath);
+
                 try {
-                    // Find DocumentRoot for this domain
-                    $docRoot = $this->findDocumentRootInConfig($configContent, $domain);
-                    if (!$docRoot) {
-                        $results['errors'][] = "Could not find DocumentRoot for domain '{$domain}'";
-                        $results['skipped'][] = $domain;
-                        continue;
-                    }
-                    
-                    // Get project root (remove /public, /public_html, /htdocs)
-                    $projectPath = $this->extractProjectPath($docRoot);
-                    
-                    // Find .env file
-                    $envPath = $this->findEnvFile($ssh, $projectPath);
-                    if (!$envPath) {
-                        $results['errors'][] = "No .env file found for domain '{$domain}' (checked: {$projectPath}/.env, ../.env)";
-                        $results['skipped'][] = $domain;
-                        continue;
-                    }
-                    
                     // Read .env content
                     $envContent = $ssh->exec("cat " . escapeshellarg($envPath) . " 2>/dev/null");
                     if (empty($envContent)) {
                         $results['errors'][] = "Could not read .env file: {$envPath}";
-                        $results['skipped'][] = $domain;
+                        $results['skipped'][] = $source;
                         continue;
                     }
-                    
+
                     // Parse DB credentials
                     $envVars = $this->parseEnvFile($envContent);
                     $dbConfig = $this->extractDbConfig($envVars);
-                    
-                    if (!$dbConfig['database'] || !$dbConfig['username']) {
-                        $results['errors'][] = "Incomplete DB config in .env for domain '{$domain}'";
-                        $results['skipped'][] = $domain;
+
+                    // Skip the default Laravel skeleton .env (DB_DATABASE=laravel on
+                    // 127.0.0.1 with root/empty password) - these are fresh stubs with no
+                    // real database, so there is nothing useful to import.
+                    if ($this->isDefaultLaravelSkeleton($dbConfig)) {
+                        $results['skipped'][] = $source . ' - default skeleton .env (DB_DATABASE=laravel)';
                         continue;
                     }
-                    
-                    // Check if already imported
+
+                    if (!$dbConfig['database'] || !$dbConfig['username'] || !$dbConfig['password']) {
+                        $results['errors'][] = "Incomplete DB config in .env ({$envPath}): missing DB_DATABASE / DB_USERNAME / DB_PASSWORD";
+                        $results['skipped'][] = $source;
+                        continue;
+                    }
+
+                    // Check if already imported for this server / project
                     $existingLog = \DB::table('ssh_db_import_log')
                         ->where('ssh_host', $request->host)
-                        ->where('domain', $domain)
+                        ->where('domain', $logDomain)
                         ->first();
-                    
+
                     if ($existingLog && !$request->force) {
-                        $results['skipped'][] = $domain . " (already imported)";
+                        $results['skipped'][] = $dbConfig['database'] . " ({$source}) - already imported";
                         continue;
                     }
-                    
-                    // Check for duplicate database credential (same host+db+user)
-                    $existingCred = DatabaseCredential::where('database', $dbConfig['database'])
+
+                    // Check for duplicate database credential (same ssh server + db + user + port)
+                    $existingCred = DatabaseCredential::where('ssh_host', $request->host)
+                        ->where('database', $dbConfig['database'])
                         ->where('username', $dbConfig['username'])
-                        ->where('host', $dbConfig['host'] ?? '127.0.0.1')
                         ->where('port', $dbConfig['port'] ?? 3306)
                         ->first();
-                    
-                    if ($existingCred && !$request->force) {
-                        $results['skipped'][] = $domain . " (duplicate credential exists)";
+
+                    if ($existingCred && !$existingLog && !$request->force) {
+                        $results['skipped'][] = $dbConfig['database'] . " ({$source}) - duplicate credential exists";
                         continue;
                     }
-                    
-                     // Create or update database credential (initially inactive)
-                     $credentialData = [
-                         'name' => "{$domain} - {$dbConfig['database']}",
-                         'connection_name' => $dbConfig['connection'],
-                         'host' => $dbConfig['host'],
-                         'port' => $dbConfig['port'],
-                         'database' => $dbConfig['database'],
-                         'username' => $dbConfig['username'],
-                         'password' => $dbConfig['password'],
-                         'notes' => "Imported from SSH server '{$request->host}', domain: {$domain}. Path: {$projectPath}",
-                         'ssh_host' => $request->host,  // Link to SSH server
-                         'is_active' => false, // Will be tested below
-                         'is_default' => false,
-                     ];
-                     
-                     // Test connection BEFORE inserting to avoid cluttering with failed connections
-                     $testCredential = new DatabaseCredential($credentialData);
-                     $isActive = $this->testDatabaseConnection($testCredential, 12); // 12-second timeout
-                     
-                     // Only create/update if connection is successful
-                     if (!$isActive) {
-                         $results['skipped'][] = $domain . " (connection test failed)";
-                         continue;
-                     }
-                     
-                      // Connection successful - now save to database
-                      if ($existingCred) {
-                          // Update existing
-                          $existingCred->update($credentialData);
-                          $credentialObj = $existingCred;
-                      } else {
-                          // Create new
-                          $credentialObj = DatabaseCredential::create($credentialData);
-                      }
-                      
-                       // Handle phpMyAdmin URL logic for newly created/updated credentials
-                       if (!empty($dbConfig['host']) && $dbConfig['host'] === '127.0.0.1') {
-                           if (!empty($dbConfig['username']) && 
-                               (strtoupper($dbConfig['username']) === 'PAYMENTS_ADMIN' || 
-                                strtoupper($dbConfig['username']) === 'PAYTEST_ADMIN')) {
-                               $credentialObj->phpmyadmin_url = 'https://admin.paytest.in/phpmyadmin';
-                               $credentialObj->save();
-                           } else {
-                               // non-payments_admin localhost: detect alias + merge with SSH domain
-                          // For localhost, detect phpMyAdmin alias from Apache config
-                          $aliasPath = null;
-                          $configPaths = [
-                              '/etc/phpmyadmin/apache.conf',
-                              '/etc/phpmyadmin/apache2.conf',
-                              '/etc/phpmyadmin/conf.d/apache.conf',
-                              '/usr/share/phpmyadmin/apache.conf',
-                              '/etc/httpd/conf.d/phpMyAdmin.conf',
-                              '/etc/httpd/conf.d/phpmyadmin.conf',
-                          ];
-                          
-                          foreach ($configPaths as $path) {
-                              $output = $ssh->exec("cat " . escapeshellarg($path) . " 2>/dev/null");
-                              if (!empty($output)) {
-                                  // Look for Alias directive
-                                  if (preg_match('/Alias\s+\/([^\s]+)\s+"([^"]+)"/i', $output, $matches)) {
-                                      $aliasPath = $matches[1]; // e.g., "phpmyadmin"
-                                      break;
-                                  } elseif (preg_match("/Alias\s+\/phpmyadmin\s+/i", $output)) {
-                                      $aliasPath = 'phpmyadmin';
-                                      break;
-                                  }
-                              }
-                          }
-                          
-                          // If not found via config files, try to find the phpMyAdmin directory
-                          if (!$aliasPath) {
-                              $locations = $ssh->exec("ls -d /usr/share/phpmyadmin /var/www/html/phpmyadmin /var/www/phpmyadmin 2>/dev/null");
-                              if (!empty($locations)) {
-                                  $aliasPath = 'phpmyadmin'; // Assume standard alias
-                              }
-                          }
-                          
-                          // Build the URL using the first available domain
-                          if (!empty($aliasPath) && !empty($domains)) {
-                              $firstDomain = $domains[0];
-                              $credentialObj->phpmyadmin_url = 'https://' . $firstDomain . '/' . $aliasPath;
-                              $credentialObj->save();
-                          } else {
-                              // Fallback if we can't determine the alias
-                              $credentialObj->phpmyadmin_url = null;
-                              $credentialObj->save();
-                           }
-                        }
+
+                    // Prepare database credential data
+                    $credentialData = [
+                        'name' => $dbConfig['database'] . " (" . $request->host . ")",
+                        'connection_name' => $dbConfig['connection'],
+                        'host' => $dbConfig['host'],
+                        'port' => $dbConfig['port'],
+                        'database' => $dbConfig['database'],
+                        'username' => $dbConfig['username'],
+                        'password' => $dbConfig['password'],
+                        'notes' => "Imported from SSH server '{$request->host}'. Source: {$source}. Path: {$projectPath}",
+                        'ssh_host' => $request->host,
+                        'is_active' => false, // Stays false until verification succeeds below
+                        'is_default' => false,
+                    ];
+
+                    // IMPORTANT #1: Before storing, verify that the database actually EXISTS on the server.
+                    // If the DB does not exist, we do NOT store these credentials.
+                    $testCredential = new DatabaseCredential($credentialData);
+
+                    // ALWAYS verify from the SSH server's network context - never from this
+                    // app server. Many remote DBs (e.g. AWS RDS) are only reachable from the
+                    // SSH server that actually runs the application and holds the credentials.
+                    // verifyDbViaSsh() resolves the real host from the .env (local MySQL or
+                    // remote RDS) and runs mysql/psql on the remote box.
+                    $dbCheck = $this->verifyDbViaSsh($ssh, $dbConfig);
+
+                    if (!$dbCheck['reachable']) {
+                        $results['errors'][] = "{$dbConfig['database']} ({$source}): cannot reach DB server - {$dbCheck['reason']}";
+                        $results['skipped'][] = $source;
+                        continue;
                     }
-                      
-                      $credentialId = $credentialObj->id;
-                    
+
+                    if (!$dbCheck['exists']) {
+                        // Database does not exist -> skip (do not store)
+                        $results['errors'][] = "{$dbConfig['database']} ({$source}): database does not exist on server";
+                        $results['skipped'][] = $source;
+                        continue;
+                    }
+
+                    // IMPORTANT #2: Connection already fully verified above via SSH.
+                    // Store ONLY on verified success.
+                    $isActive = $dbCheck['connected'] ?? false;
+                    if (!$isActive) {
+                        $results['errors'][] = "{$dbConfig['database']} ({$source}): connection test failed after DB existence check";
+                        $results['skipped'][] = $source;
+                        continue;
+                    }
+
+                    // Connection successful - now save to database (mark as active)
+                    $credentialData['is_active'] = $isActive;
+                    if ($existingCred) {
+                        $existingCred->update($credentialData);
+                        $credentialObj = $existingCred;
+                    } else {
+                        $credentialObj = DatabaseCredential::create($credentialData);
+                    }
+
+                    // Apply phpMyAdmin URL logic (SeccureCon for payments_admin / paytest)
+                    $this->applyPhpMyAdminUrl($credentialObj, $dbConfig, $domains, $ssh);
+
+                    $credentialId = $credentialObj->id;
+
                     // Log import
                     \DB::table('ssh_db_import_log')->updateOrInsert(
                         [
                             'ssh_host' => $request->host,
-                            'domain' => $domain
+                            'domain' => $logDomain
                         ],
                         [
                             'database_credential_id' => $credentialId,
@@ -3796,27 +3790,23 @@ class SshController extends Controller
                             'env_path' => $envPath,
                             'imported_at' => now(),
                             'last_synced_at' => now(),
-                            'import_status' => $isActive ? 'success' : 'failed',
-                            'error_message' => $isActive ? null : 'Connection test failed',
+                            'import_status' => 'success',
+                            'error_message' => null,
                             'env_vars_snapshot' => json_encode(array_merge(
                                 $envVars,
                                 ['_imported_keys' => array_keys($envVars)]
                             ))
                         ]
                     );
-                    
-                    if ($isActive) {
-                        $results['imported'][] = $domain;
-                    } else {
-                        $results['skipped'][] = $domain . " (connection test failed)";
-                    }
-                    
-                } catch (\Exception $domainErr) {
-                    $results['errors'][] = "Domain '{$domain}': " . $domainErr->getMessage();
-                    $results['skipped'][] = $domain;
+
+                    $results['imported'][] = $dbConfig['database'] . " ({$source})";
+
+                } catch (\Exception $projectErr) {
+                    $results['errors'][] = "{$envPath}: " . $projectErr->getMessage();
+                    $results['skipped'][] = $source;
                 }
             }
-            
+
             return response()->json([
                 'success' => true,
                 'host' => $request->host,
@@ -3824,9 +3814,10 @@ class SshController extends Controller
                 'skipped_count' => count($results['skipped']),
                 'domains_imported' => $results['imported'],
                 'domains_skipped' => $results['skipped'],
-                'errors' => $results['errors']
+                'errors' => $results['errors'],
+                'projects_found' => count($discovery['projects'])
             ]);
-            
+
         } catch (\Exception $e) {
             \Log::error('SSH DB Import failed: ' . $e->getMessage() . "\nTrace: " . $e->getTraceAsString());
             return response()->json([
@@ -4094,6 +4085,404 @@ class SshController extends Controller
                 'success' => false,
                 'message' => $e->getMessage()
             ]);
+        }
+    }
+
+    /**
+     * Scan an SSH server for projects containing .env files, parse the DB config
+     * from each .env, and report whether each database exists - WITHOUT storing anything.
+     * Used by the "Import from SSH" preview step on the Database Manager page.
+     */
+    public function scanProjects(Request $request)
+    {
+        try {
+            $request->validate([
+                'host' => 'required|string',
+                'hostname' => 'required|string',
+                'user' => 'nullable|string',
+                'identity_file' => 'nullable|string',
+                'port' => 'nullable|integer',
+                'domains' => 'nullable|array'
+            ]);
+
+            $hostConfig = $request->only(['host', 'hostname', 'user', 'identity_file', 'port']);
+            $hostConfig['port'] = $hostConfig['port'] ?? 22;
+            $hostConfig['user'] = $hostConfig['user'] ?? 'ubuntu';
+
+            // Connect to SSH server
+            $ssh = $this->connectToServer($hostConfig);
+
+            // Discover project directories + .env files
+            $discovery = $this->discoverProjectEnvFiles($ssh);
+
+            $projects = [];
+            foreach ($discovery['projects'] as $project) {
+                $envPath = $project['env_path'];
+                $projectPath = $project['project_path'];
+                $source = $project['source'];
+
+                $envContent = $ssh->exec("cat " . escapeshellarg($envPath) . " 2>/dev/null");
+                $envVars = $this->parseEnvFile($envContent);
+                $dbConfig = $this->extractDbConfig($envVars);
+
+                $scan = [
+                    'env_path' => $envPath,
+                    'project_path' => $projectPath,
+                    'source' => $source,
+                    'connection' => $dbConfig['connection'] ?? 'mysql',
+                    'host' => $dbConfig['host'] ?? null,
+                    'port' => $dbConfig['port'] ?? null,
+                    'database' => $dbConfig['database'] ?? null,
+                    'username' => $dbConfig['username'] ?? null,
+                    'has_password' => !empty($dbConfig['password']),
+                    'status' => 'no-db-config',
+                    'reason' => 'No DB_DATABASE / DB_USERNAME found in .env',
+                    'db_exists' => null,
+                    'reachable' => null,
+                    'already_imported' => false,
+                ];
+
+                                if (!empty($dbConfig['database']) && !empty($dbConfig['username'])) {
+                    // Skip the default Laravel skeleton .env (DB_DATABASE=laravel on
+                    // 127.0.0.1 with root/empty password) - nothing useful to import.
+                    if ($this->isDefaultLaravelSkeleton($dbConfig)) {
+                        $scan['status'] = 'skipped';
+                        $scan['reason'] = 'Default skeleton .env (DB_DATABASE=laravel)';
+                    } else {
+                        $testCredential = new DatabaseCredential([
+                            'connection_name' => $dbConfig['connection'],
+                            'host' => $dbConfig['host'],
+                            'port' => $dbConfig['port'],
+                            'database' => $dbConfig['database'],
+                            'username' => $dbConfig['username'],
+                            'password' => $dbConfig['password'],
+                        ]);
+
+                        // ALWAYS verify from the SSH server's network context - never from
+                        // this app server (remote DBs like AWS RDS are only reachable from
+                        // the SSH server that runs the application).
+                        $dbCheck = $this->verifyDbViaSsh($ssh, $dbConfig);
+                        $scan['db_exists'] = $dbCheck['exists'];
+                        $scan['reachable'] = $dbCheck['reachable'];
+                        $scan['reason'] = $dbCheck['reason'];
+
+                        if (!$dbCheck['reachable']) {
+                            $scan['status'] = 'unreachable';
+                        } elseif (!$dbCheck['exists']) {
+                            $scan['status'] = 'db-missing';
+                        } elseif (isset($dbCheck['connected']) && !$dbCheck['connected']) {
+                            $scan['status'] = 'connection-failed';
+                        } else {
+                            $scan['status'] = 'ready';
+                        }
+
+                        // Is it already stored?
+                        $existingCred = DatabaseCredential::where('ssh_host', $request->host)
+                            ->where('database', $dbConfig['database'])
+                            ->where('username', $dbConfig['username'])
+                            ->where('port', $dbConfig['port'] ?? 3306)
+                            ->first();
+
+                        if ($existingCred) {
+                            $scan['already_imported'] = true;
+                            $scan['status'] = 'already-imported';
+                            $scan['reason'] = 'Credentials already stored for this database';
+                        }
+                    }
+                }
+
+                $projects[] = $scan;
+            }
+
+            return response()->json([
+                'success' => true,
+                'host' => $request->host,
+                'hostname' => $hostConfig['hostname'],
+                'projects' => $projects,
+                'total' => count($projects),
+                'ready_count' => collect($projects)->where('status', 'ready')->count()
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('SSH project scan failed: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Scan failed: ' . $e->getMessage()
+            ], 422);
+        }
+    }
+
+    /**
+     * Discover project directories by scanning common web roots for .env files.
+     * Groups .env variants per project and prefers the main .env file.
+     */
+    private function discoverProjectEnvFiles(SSH2 $ssh): array
+    {
+        $envFiles = [];
+        $roots = ['/var/www', '/home'];
+
+        foreach ($roots as $root) {
+            $cmd = "find {$root} -maxdepth 4 -type f \( -name .env -o -name .env.production -o -name .env.local -o -name .env.development \) 2>/dev/null | head -300";
+            $out = $ssh->exec($cmd);
+            if (!empty($out)) {
+                foreach (explode("\n", trim($out)) as $line) {
+                    $line = trim($line);
+                    if ($line === '') {
+                        continue;
+                    }
+                    // Skip noise: vendor, node_modules, storage, .git, example env files
+                    if (preg_match('#/(node_modules|vendor|vendor_|storage|\\.git)/#', $line)) {
+                        continue;
+                    }
+                    if (str_contains($line, '.env.example')) {
+                        continue;
+                    }
+                    $envFiles[] = $line;
+                }
+            }
+        }
+
+        // Group by project directory, prefer .env over .env.production / .env.local / .env.development
+        $precedence = ['.env' => 1, '.env.production' => 2, '.env.local' => 3, '.env.development' => 4];
+        $grouped = [];
+
+        foreach (array_unique($envFiles) as $file) {
+            $projectPath = dirname($file);
+            $base = basename($file);
+            $rank = $precedence[$base] ?? 5;
+            if (!isset($grouped[$projectPath]) || $rank < $grouped[$projectPath]['rank']) {
+                $grouped[$projectPath] = [
+                    'env_path' => $file,
+                    'project_path' => $projectPath,
+                    'source' => "project: {$projectPath}",
+                    'rank' => $rank,
+                ];
+            }
+        }
+
+        $projects = [];
+        foreach ($grouped as $project) {
+            unset($project['rank']);
+            $projects[] = $project;
+        }
+
+        return [
+            'env_paths' => array_column($projects, 'env_path'),
+            'projects' => $projects,
+            'count' => count($projects),
+        ];
+    }
+
+    /**
+     * Check whether a database EXISTS on its DB server without connecting to the DB itself.
+     * Returns reachability + existence + a human readable reason.
+     */
+    private function checkDatabaseExists(DatabaseCredential $credential): array
+    {
+        $host = $credential->host;
+        $port = (int) ($credential->port ?: 3306);
+        $username = $credential->username;
+        $password = $credential->decrypted_password;
+        $database = $credential->database;
+        $driver = $credential->connection_name;
+
+        try {
+            if ($driver === 'mysql') {
+                $pdo = new \PDO("mysql:host={$host};port={$port};charset=utf8mb4", $username, $password ?: null, [
+                    \PDO::ATTR_TIMEOUT => 10,
+                    \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+                ]);
+                $stmt = $pdo->prepare("SELECT 1 FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?");
+                $stmt->execute([$database]);
+                $exists = (bool) $stmt->fetchColumn();
+                return [
+                    'reachable' => true,
+                    'exists' => $exists,
+                    'reason' => $exists ? 'Database exists on server' : 'Database does not exist on server',
+                ];
+            }
+
+            if ($driver === 'pgsql') {
+                $pdo = new \PDO("pgsql:host={$host};port={$port};dbname=postgres", $username, $password ?: null, [
+                    \PDO::ATTR_TIMEOUT => 10,
+                    \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+                ]);
+                $stmt = $pdo->prepare("SELECT 1 FROM pg_database WHERE datname = ?");
+                $stmt->execute([$database]);
+                $exists = (bool) $stmt->fetchColumn();
+                return [
+                    'reachable' => true,
+                    'exists' => $exists,
+                    'reason' => $exists ? 'Database exists on server' : 'Database does not exist on server',
+                ];
+            }
+
+            // SQLite
+            $exists = file_exists($database);
+            return [
+                'reachable' => $exists,
+                'exists' => $exists,
+                'reason' => $exists ? 'Database exists' : 'SQLite database file not found',
+            ];
+        } catch (\PDOException $e) {
+            $msg = strtolower($e->getMessage());
+            $reason = 'Database server error';
+            if (str_contains($msg, 'access denied') || str_contains($msg, '1045')) {
+                $reason = 'Access denied for user (check username/password)';
+            } elseif (str_contains($msg, '1044') || str_contains($msg, 'not allowed')) {
+                $reason = 'User is not allowed to access this server';
+            } elseif (str_contains($msg, 'connection refused') || str_contains($msg, '2002') || str_contains($msg, 'timed out') || str_contains($msg, '10061')) {
+                $reason = 'Database server unreachable (connection refused / timeout)';
+            } elseif (str_contains($msg, 'could not translate host name') || str_contains($msg, 'name or service not known')) {
+                $reason = 'Unknown database host';
+            }
+            return ['reachable' => false, 'exists' => false, 'reason' => $reason];
+        } catch (\Exception $e) {
+            return ['reachable' => false, 'exists' => false, 'reason' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Verify a database via SSH when the DB host is localhost on the SSH server.
+     * Runs mysql/psql on the remote server itself, checking both DB existence
+     * and a full connection against the database name.
+     */
+        private function verifyDbViaSsh($ssh, array $dbConfig): array
+    {
+        $driver = $dbConfig['connection'] ?? 'mysql';
+        $port = $dbConfig['port'] ?: ($driver === 'pgsql' ? 5432 : 3306);
+        $database = $dbConfig['database'];
+        $username = $dbConfig['username'];
+        $password = $dbConfig['password'] ?? '';
+
+        // Resolve the DB host. When the project's .env points at a remote host
+        // (e.g. an AWS RDS endpoint) we MUST connect to that host; when it is
+        // empty/localhost we connect on the SSH server's loopback. Using the
+        // real host here is what lets us verify remote DBs that are only
+        // reachable from the SSH server's network context.
+        $dbHost = trim((string) ($dbConfig['host'] ?? ''));
+        if ($dbHost === '' || $dbHost === 'localhost') {
+            $dbHost = '127.0.0.1';
+        }
+
+        try {
+            if ($driver === 'mysql') {
+                // Existence check against information_schema on the resolved host
+                $q = "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '" . addslashes($database) . "'";
+                $hostArg = $dbHost === '127.0.0.1' ? '127.0.0.1' : $dbHost;
+                $cmd = "MYSQL_PWD=" . escapeshellarg($password) . " mysql -h " . escapeshellarg($hostArg) . " -P " . (int) $port . " -u " . escapeshellarg($username) . " -N -s -e " . escapeshellarg($q) . " 2>&1";
+                $out = trim((string) $ssh->exec($cmd));
+
+                if ($out === '' || stripos($out, 'access denied') !== false || stripos($out, 'error') !== false) {
+                    return ['reachable' => false, 'exists' => false, 'connected' => false, 'reason' => 'Access denied / cannot authenticate on server'];
+                }
+
+                $exists = ($out === $database);
+                if (!$exists) {
+                    return ['reachable' => true, 'exists' => false, 'connected' => false, 'reason' => 'Database does not exist on server'];
+                }
+
+                // Full connection check against the actual database
+                $cmdConn = "MYSQL_PWD=" . escapeshellarg($password) . " mysql -h " . escapeshellarg($hostArg) . " -P " . (int) $port . " -u " . escapeshellarg($username) . " -N -s -e " . escapeshellarg('SELECT 1') . " " . escapeshellarg($database) . " 2>&1";
+                $outConn = trim((string) $ssh->exec($cmdConn));
+
+                if ($outConn === '1') {
+                    return ['reachable' => true, 'exists' => true, 'connected' => true, 'reason' => 'Database exists and connection verified on server'];
+                }
+                return ['reachable' => true, 'exists' => true, 'connected' => false, 'reason' => 'Database exists but connection failed on server: ' . substr($outConn, 0, 200)];
+            }
+
+            if ($driver === 'pgsql') {
+                $q = "SELECT 1 FROM pg_database WHERE datname='" . addslashes($database) . "'";
+                $hostArg = $dbHost === '127.0.0.1' ? '127.0.0.1' : $dbHost;
+                $cmd = "PGPASSWORD=" . escapeshellarg($password) . " psql -h " . escapeshellarg($hostArg) . " -p " . (int) $port . " -U " . escapeshellarg($username) . " -tAc " . escapeshellarg($q) . " 2>&1";
+                $out = trim((string) $ssh->exec($cmd));
+
+                if (stripos($out, 'fatal') !== false || stripos($out, 'access denied') !== false) {
+                    return ['reachable' => false, 'exists' => false, 'connected' => false, 'reason' => 'Cannot authenticate via psql on server'];
+                }
+                $exists = ($out === '1');
+                return ['reachable' => true, 'exists' => $exists, 'connected' => $exists, 'reason' => $exists ? 'Database exists on server' : 'Database does not exist on server'];
+            }
+
+            // SQLite: just check the file exists on the server
+            $existsPath = trim((string) $ssh->exec("test -f " . escapeshellarg($database) . " && echo yes || echo no"));
+            $exists = ($existsPath === 'yes');
+            return ['reachable' => $exists, 'exists' => $exists, 'connected' => $exists, 'reason' => $exists ? 'SQLite database exists' : 'SQLite database file not found'];
+        } catch (\Exception $e) {
+            return ['reachable' => false, 'exists' => false, 'connected' => false, 'reason' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Whether a parsed DB config represents the default Laravel skeleton
+     * .env (DB_DATABASE=laravel, host 127.0.0.1, user root, empty password).
+     * These are fresh `composer create-project` stubs with no real database and
+     * should be ignored during SSH import.
+     */
+    private function isDefaultLaravelSkeleton(array $dbConfig): bool
+    {
+        $host = trim((string) ($dbConfig['host'] ?? ''));
+        return ($dbConfig['connection'] ?? 'mysql') === 'mysql'
+            && in_array($host, ['127.0.0.1', 'localhost', ''], true)
+            && ($dbConfig['database'] ?? '') === 'laravel'
+            && ($dbConfig['username'] ?? '') === 'root'
+            && (($dbConfig['password'] ?? '') === '' || ($dbConfig['password'] ?? '') === null);
+    }
+
+    /**
+     * Apply phpMyAdmin URL to a credential after import.
+     * For users payments_admin / paytest the phpMyAdmin is hosted on
+     * https://admin.paytest.in/SeccureCon/
+     */
+    private function applyPhpMyAdminUrl(DatabaseCredential $credential, array $dbConfig, array $domains, $ssh): void
+    {
+        $username = strtoupper($dbConfig['username'] ?? '');
+
+        // Special case: payments_admin / paytest get the admin.paytest.in SeccureCon phpMyAdmin
+        if ($username === 'PAYMENTS_ADMIN' || $username === 'PAYTEST') {
+            $credential->phpmyadmin_url = 'https://admin.paytest.in/SeccureCon/';
+            $credential->save();
+            return;
+        }
+
+        // For localhost DBs, detect phpMyAdmin alias from the server config
+        if (!empty($dbConfig['host']) && $dbConfig['host'] === '127.0.0.1') {
+            $aliasPath = null;
+            $configPaths = [
+                '/etc/phpmyadmin/apache.conf',
+                '/etc/phpmyadmin/apache2.conf',
+                '/etc/phpmyadmin/conf.d/apache.conf',
+                '/usr/share/phpmyadmin/apache.conf',
+                '/etc/httpd/conf.d/phpMyAdmin.conf',
+                '/etc/httpd/conf.d/phpmyadmin.conf',
+            ];
+
+            foreach ($configPaths as $path) {
+                $output = $ssh->exec("cat " . escapeshellarg($path) . " 2>/dev/null");
+                if (!empty($output)) {
+                    if (preg_match('/Alias\\s+\\/([^\\s]+)\\s+"([^"]+)"/i', $output, $matches)) {
+                        $aliasPath = $matches[1]; // e.g., "phpmyadmin"
+                        break;
+                    } elseif (preg_match("/Alias\\s+\\/phpmyadmin\\s+/i", $output)) {
+                        $aliasPath = 'phpmyadmin';
+                        break;
+                    }
+                }
+            }
+
+            if (!$aliasPath) {
+                $locations = $ssh->exec("ls -d /usr/share/phpmyadmin /var/www/html/phpmyadmin /var/www/phpmyadmin 2>/dev/null");
+                if (!empty($locations)) {
+                    $aliasPath = 'phpmyadmin'; // Assume standard alias
+                }
+            }
+
+            if (!empty($aliasPath) && !empty($domains)) {
+                $credential->phpmyadmin_url = 'https://' . $domains[0] . '/' . $aliasPath;
+            } else {
+                $credential->phpmyadmin_url = null;
+            }
+            $credential->save();
         }
     }
 

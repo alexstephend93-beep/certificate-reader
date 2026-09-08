@@ -33,15 +33,16 @@ class DatabaseController extends Controller
                 'password' => 'required|string', // password required for new connection
                 'notes' => 'nullable|string',
                 'is_default' => 'boolean',
-                'phpmyadmin_url' => 'nullable|string|max:255'
+                'phpmyadmin_url' => 'nullable|string|max:255',
+                'ssh_host' => 'nullable|string|max:255'
             ]);
-            
+
             // Set default port if not provided
             if (empty($validated['port'])) {
                 $validated['port'] = $validated['connection_name'] === 'mysql' ? 3306 : 5432;
             }
-            
-            // Test connection BEFORE creating record (15-second timeout)
+
+            // Test connection BEFORE creating record
             $testCredential = new DatabaseCredential([
                 'connection_name' => $validated['connection_name'],
                 'host' => $validated['host'],
@@ -50,16 +51,32 @@ class DatabaseController extends Controller
                 'username' => $validated['username'],
                 'password' => $validated['password'],
             ]);
-            
-            $isActive = $this->testDatabaseConnection($testCredential, 15);
-            
-            if (!$isActive) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Cannot connect to database. Please check credentials (host, port, database, username, password) and ensure the database server is reachable.'
-                ], 422);
+
+            // If ssh_host is provided, verify the connection through the SSH server
+            // (remote DBs like AWS RDS are often only reachable from the SSH server)
+            $sshHost = $validated['ssh_host'] ?? null;
+            if (!empty($sshHost)) {
+                $sshResult = $this->testConnectionViaSsh($sshHost, $testCredential);
+                $isActive = $sshResult['success'];
+
+                if (!$isActive) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Cannot connect to database via SSH server "' . $sshHost . '". ' . ($sshResult['error'] ?? 'Please check credentials (host, port, database, username, password) and ensure the database server is reachable from the SSH server.')
+                    ], 422);
+                }
+            } else {
+                // No SSH host - test directly from this app server
+                $isActive = $this->testDatabaseConnection($testCredential, 15);
+
+                if (!$isActive) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Cannot connect to database. Please check credentials (host, port, database, username, password) and ensure the database server is reachable.'
+                    ], 422);
+                }
             }
-            
+
             $validated['is_active'] = true;
             
             // If this is set as default, remove default from others
@@ -72,8 +89,9 @@ class DatabaseController extends Controller
             // Handle phpMyAdmin URL logic
             if (!empty($validated['username']) && 
                 (strtoupper($validated['username']) === 'PAYMENTS_ADMIN' || 
+                 strtoupper($validated['username']) === 'PAYTEST' ||
                  strtoupper($validated['username']) === 'PAYTEST_ADMIN')) {
-                $validated['phpmyadmin_url'] = 'https://admin.paytest.in/phpmyadmin';
+                $validated['phpmyadmin_url'] = 'https://admin.paytest.in/SeccureCon/';
             } elseif (!empty($validated['host']) && $validated['host'] === '127.0.0.1') {
                 $validated['phpmyadmin_url'] = null;
             }
@@ -98,7 +116,7 @@ class DatabaseController extends Controller
     {
         try {
             $database = DatabaseCredential::findOrFail($id);
-            
+
             $validated = $request->validate([
                 'name' => 'required|string|max:255|unique:database_credentials,name,' . $id,
                 'connection_name' => 'required|in:mysql,pgsql,sqlite',
@@ -109,19 +127,20 @@ class DatabaseController extends Controller
                 'password' => 'nullable|string',
                 'notes' => 'nullable|string',
                 'is_default' => 'boolean',
-                'phpmyadmin_url' => 'nullable|string|max:255'
+                'phpmyadmin_url' => 'nullable|string|max:255',
+                'ssh_host' => 'nullable|string|max:255'
             ]);
-            
+
             // Set default port if not provided
             if (empty($validated['port'])) {
                 $validated['port'] = $validated['connection_name'] === 'mysql' ? 3306 : 5432;
             }
-            
+
             // Remove password from validated if it's empty (don't update)
             if (empty($validated['password'])) {
                 unset($validated['password']);
             }
-            
+
             // If this is set as default, remove default from others
             if (!empty($validated['is_default'])) {
                 DatabaseCredential::where('is_default', true)
@@ -130,20 +149,41 @@ class DatabaseController extends Controller
             } else {
                 $validated['is_default'] = false;
             }
-            
+
             // Handle phpMyAdmin URL logic
-            if (!empty($validated['username']) && 
-                (strtoupper($validated['username']) === 'PAYMENTS_ADMIN' || 
+            if (!empty($validated['username']) &&
+                (strtoupper($validated['username']) === 'PAYMENTS_ADMIN' ||
+                 strtoupper($validated['username']) === 'PAYTEST' ||
                  strtoupper($validated['username']) === 'PAYTEST_ADMIN')) {
-                $validated['phpmyadmin_url'] = 'https://admin.paytest.in/phpmyadmin';
+                $validated['phpmyadmin_url'] = 'https://admin.paytest.in/SeccureCon/';
             } elseif (!empty($validated['host']) && $validated['host'] === '127.0.0.1') {
                 // For localhost, we'll need to get the alias from the SSH server later
                 // For now, we'll leave it null and it can be updated later
                 $validated['phpmyadmin_url'] = null;
             }
-            
+
+            // If password is being updated and ssh_host is set, verify the new credentials
+            if (!empty($validated['password']) && !empty($validated['ssh_host'])) {
+                $testCredential = new DatabaseCredential([
+                    'connection_name' => $validated['connection_name'],
+                    'host' => $validated['host'],
+                    'port' => $validated['port'],
+                    'database' => $validated['database'],
+                    'username' => $validated['username'],
+                    'password' => $validated['password'],
+                ]);
+
+                $sshResult = $this->testConnectionViaSsh($validated['ssh_host'], $testCredential);
+                if (!$sshResult['success']) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Cannot connect to database via SSH server "' . $validated['ssh_host'] . '". ' . ($sshResult['error'] ?? 'Please check credentials.')
+                    ], 422);
+                }
+            }
+
             $database->update($validated);
-            
+
             return response()->json([
                 'success' => true,
                 'message' => 'Database connection updated successfully',
@@ -581,12 +621,12 @@ class DatabaseController extends Controller
         $request->validate([
             'id' => 'required|exists:database_credentials,id'
         ]);
-        
+
         $startTime = microtime(true);
-        
+
         try {
             $connection = DatabaseCredential::findOrFail($request->id);
-            
+
             \Log::info('Testing database connection', [
                 'name' => $connection->name,
                 'type' => $connection->connection_name,
@@ -594,45 +634,74 @@ class DatabaseController extends Controller
                 'database' => $connection->database,
                 'user' => $connection->username
             ]);
-            
-            $result = $this->performConnectionTest($connection);
-            
-            if ($result['success']) {
-                $connection->is_active = true;
-                $connection->save();
-                
-                $endTime = microtime(true);
-                $responseTime = round(($endTime - $startTime) * 1000);
-                
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Connection successful',
-                    'response_time_ms' => $responseTime,
-                    'details' => $result['details'] ?? null
-                ]);
+
+            // If the credential has an ssh_host, verify through SSH server
+            // (remote DBs like AWS RDS are often only reachable from the SSH server)
+            if (!empty($connection->ssh_host)) {
+                $sshResult = $this->testConnectionViaSsh($connection->ssh_host, $connection);
+
+                if ($sshResult['success']) {
+                    $connection->is_active = true;
+                    $connection->save();
+
+                    $endTime = microtime(true);
+                    $responseTime = round(($endTime - $startTime) * 1000);
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Connection successful (verified via SSH server "' . $connection->ssh_host . '")',
+                        'response_time_ms' => $responseTime,
+                        'details' => [
+                            'host' => $connection->host,
+                            'port' => $connection->port,
+                            'database' => $connection->database,
+                            'verified_via' => 'ssh:' . $connection->ssh_host,
+                        ]
+                    ]);
+                } else {
+                    throw new Exception($sshResult['error'] ?? 'SSH verification failed');
+                }
             } else {
-                throw new Exception($result['error']);
+                // No SSH host - test directly from this app server
+                $result = $this->performConnectionTest($connection);
+
+                if ($result['success']) {
+                    $connection->is_active = true;
+                    $connection->save();
+
+                    $endTime = microtime(true);
+                    $responseTime = round(($endTime - $startTime) * 1000);
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Connection successful',
+                        'response_time_ms' => $responseTime,
+                        'details' => $result['details'] ?? null
+                    ]);
+                } else {
+                    throw new Exception($result['error']);
+                }
             }
-            
+
         } catch (\Exception $e) {
             if (isset($connection)) {
                 $connection->is_active = false;
                 $connection->save();
             }
-            
+
             \Log::error('Connection test failed', [
                 'error' => $e->getMessage(),
                 'connection' => $connection->name ?? 'unknown'
             ]);
-            
+
             $endTime = microtime(true);
             $responseTime = round(($endTime - $startTime) * 1000);
-            
+
             $friendlyMessage = $this->getUserFriendlyError(
                 $e->getMessage(),
                 $result['error_type'] ?? null
             );
-            
+
             return response()->json([
                 'success' => false,
                 'message' => $friendlyMessage,
@@ -1603,13 +1672,224 @@ class DatabaseController extends Controller
         }
     }
 
+    /**
+     * Get all database connections as JSON (for UI refresh without page reload)
+     */
+    public function getAll()
+    {
+        try {
+            $databases = DatabaseCredential::orderBy('is_default', 'desc')
+                ->orderBy('name')
+                ->get()
+                ->map(function ($db) {
+                    $data = $db->toArray();
+                    $data['has_password'] = $db->has_password;
+                    return $data;
+                });
+
+            return response()->json([
+                'success' => true,
+                'databases' => $databases
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load database connections: ' . $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Test ALL stored database connections and refresh their is_active status.
+     */
+    public function testAll(Request $request)
+    {
+        try {
+            $connections = DatabaseCredential::orderBy('name')->get();
+            $results = [];
+
+            foreach ($connections as $connection) {
+                $startTime = microtime(true);
+                $result = $this->performConnectionTest($connection);
+                $elapsedMs = round((microtime(true) - $startTime) * 1000);
+
+                $results[] = [
+                    'id' => $connection->id,
+                    'name' => $connection->name,
+                    'connection_name' => $connection->connection_name,
+                    'host' => $connection->host . ':' . $connection->port,
+                    'database' => $connection->database,
+                    'username' => $connection->username,
+                    'success' => $result['success'],
+                    'response_time_ms' => $elapsedMs,
+                    'error' => $result['success']
+                        ? null
+                        : $this->getUserFriendlyError($result['error'] ?? 'Unknown error', $result['error_type'] ?? null)
+                ];
+
+                // Persist the live status
+                $connection->is_active = $result['success'];
+                $connection->save();
+            }
+
+            $passed = collect($results)->where('success', true)->count();
+            $failed = count($results) - $passed;
+
+            return response()->json([
+                'success' => true,
+                'total' => count($results),
+                'passed' => $passed,
+                'failed' => $failed,
+                'results' => $results
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Batch test failed: ' . $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Export database credentials as a JSON file (without passwords).
+     */
+    public function exportCredentials()
+    {
+        try {
+            $databases = DatabaseCredential::orderBy('name')->get()->map(function ($db) {
+                return [
+                    'name' => $db->name,
+                    'connection_name' => $db->connection_name,
+                    'host' => $db->host,
+                    'port' => $db->port,
+                    'database' => $db->database,
+                    'username' => $db->username,
+                    'notes' => $db->notes,
+                    'is_default' => $db->is_default,
+                    'phpmyadmin_url' => $db->phpmyadmin_url,
+                    'ssh_host' => $db->ssh_host,
+                ];
+            });
+
+            $payload = [
+                'app' => 'Certificate Reader - Database Manager',
+                'exported_at' => now()->toDateTimeString(),
+                'count' => $databases->count(),
+                'credentials' => $databases
+            ];
+
+            $filename = 'database-credentials-' . now()->format('Y-m-d-His') . '.json';
+            return response()->streamDownload(function () use ($payload) {
+                echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            }, $filename, ['Content-Type' => 'application/json']);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Export failed: ' . $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Import database credentials from an exported JSON file.
+     * Every import is connection-tested before saving.
+     */
+    public function importCredentials(Request $request)
+    {
+        try {
+            $request->validate([
+                'credentials' => 'required|array',
+                'credentials.*.name' => 'required|string|max:255',
+                'credentials.*.connection_name' => 'required|in:mysql,pgsql,sqlite',
+                'credentials.*.database' => 'required|string',
+                'credentials.*.password' => 'nullable|string',
+            ]);
+
+            $imported = 0;
+            $skipped = 0;
+            $errors = [];
+
+            foreach ($request->credentials as $cred) {
+                try {
+                    $connectionName = $cred['connection_name'] ?? 'mysql';
+                    $port = $cred['port'] ?? ($connectionName === 'pgsql' ? 5432 : 3306);
+                    $host = $cred['host'] ?? '127.0.0.1';
+                    $database = $cred['database'];
+                    $username = $cred['username'] ?? '';
+                    $password = $cred['password'] ?? '';
+
+                    // Skip if already exists (same host + db + user)
+                    $exists = DatabaseCredential::where('host', $host)
+                        ->where('database', $database)
+                        ->where('username', $username)
+                        ->first();
+
+                    if ($exists) {
+                        $skipped++;
+                        $errors[] = "Skipped (already exists): {$database}";
+                        continue;
+                    }
+
+                    // Test the connection before importing
+                    $test = new DatabaseCredential([
+                        'connection_name' => $connectionName,
+                        'host' => $host,
+                        'port' => $port,
+                        'database' => $database,
+                        'username' => $username,
+                        'password' => $password,
+                    ]);
+
+                    $result = $this->performConnectionTest($test);
+                    if (!$result['success']) {
+                        $skipped++;
+                        $errors[] = "Connection failed for {$database}: " . $this->getUserFriendlyError($result['error'] ?? 'Error', $result['error_type'] ?? null);
+                        continue;
+                    }
+
+                    DatabaseCredential::create([
+                        'name' => $cred['name'],
+                        'connection_name' => $connectionName,
+                        'host' => $host,
+                        'port' => $port,
+                        'database' => $database,
+                        'username' => $username,
+                        'password' => $password,
+                        'notes' => ($cred['notes'] ?? '') . ' (imported via JSON)',
+                        'phpmyadmin_url' => $cred['phpmyadmin_url'] ?? null,
+                        'ssh_host' => $cred['ssh_host'] ?? null,
+                        'is_default' => false,
+                        'is_active' => true,
+                    ]);
+
+                    $imported++;
+                } catch (Exception $e) {
+                    $skipped++;
+                    $errors[] = "Error: " . $e->getMessage();
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'imported' => $imported,
+                'skipped' => $skipped,
+                'errors' => $errors
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Import failed: ' . $e->getMessage()
+            ]);
+        }
+    }
+
     private function testDatabaseConnection($connection)
     {
         if ($connection->connection_name === 'sqlite') {
             if (!file_exists($connection->database)) {
                 throw new Exception('SQLite database file not found: ' . $connection->database);
             }
-            
+
             // Test SQLite connection
             try {
                 $pdo = new \PDO('sqlite:' . $connection->database);
@@ -1632,15 +1912,211 @@ class DatabaseController extends Controller
                 'strict' => true,
                 'engine' => null,
             ];
-            
+
             DB::purge('dynamic');
             config(['database.connections.dynamic' => $config]);
-            
+
             try {
                 DB::connection('dynamic')->getPdo();
             } catch (\PDOException $e) {
                 throw new Exception($e->getMessage());
             }
         }
+    }
+
+    /**
+     * Test a database connection through an SSH server.
+     * Used when the DB host is not reachable from this app server
+     * (e.g. AWS RDS endpoints that are only accessible from the SSH server).
+     *
+     * @param string $sshHost The SSH host alias from ~/.ssh/config
+     * @param DatabaseCredential $credential The DB credentials to test
+     * @return array ['success' => bool, 'error' => string|null]
+     */
+    private function testConnectionViaSsh(string $sshHost, DatabaseCredential $credential): array
+    {
+        try {
+            // Look up the SSH server config
+            $sshServer = $this->findSshServerConfig($sshHost);
+            if (!$sshServer) {
+                return [
+                    'success' => false,
+                    'error' => 'SSH server "' . $sshHost . '" not found in ~/.ssh/config'
+                ];
+            }
+
+            // Connect to the SSH server
+            $ssh = $this->connectToSshServer($sshServer);
+
+            $driver = $credential->connection_name;
+            $host = trim($credential->host ?? '');
+            if ($host === '' || $host === 'localhost') {
+                $host = '127.0.0.1';
+            }
+            $port = (int) ($credential->port ?: ($driver === 'pgsql' ? 5432 : 3306));
+            $database = $credential->database;
+            $username = $credential->username;
+            $password = $credential->decrypted_password;
+
+            if ($driver === 'mysql') {
+                // Existence check
+                $q = "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '" . addslashes($database) . "'";
+                $cmd = "MYSQL_PWD=" . escapeshellarg($password) . " mysql -h " . escapeshellarg($host) . " -P " . $port . " -u " . escapeshellarg($username) . " -N -s -e " . escapeshellarg($q) . " 2>&1";
+                $out = trim((string) $ssh->exec($cmd));
+
+                if ($out === '' || stripos($out, 'access denied') !== false || stripos($out, 'error') !== false) {
+                    return ['success' => false, 'error' => 'Access denied / cannot authenticate on SSH server'];
+                }
+
+                if ($out !== $database) {
+                    return ['success' => false, 'error' => 'Database "' . $database . '" does not exist on server'];
+                }
+
+                // Full connection check
+                $cmdConn = "MYSQL_PWD=" . escapeshellarg($password) . " mysql -h " . escapeshellarg($host) . " -P " . $port . " -u " . escapeshellarg($username) . " -N -s -e " . escapeshellarg('SELECT 1') . " " . escapeshellarg($database) . " 2>&1";
+                $outConn = trim((string) $ssh->exec($cmdConn));
+
+                if ($outConn === '1') {
+                    return ['success' => true, 'error' => null];
+                }
+                return ['success' => false, 'error' => 'Connection failed on SSH server: ' . substr($outConn, 0, 200)];
+            }
+
+            if ($driver === 'pgsql') {
+                $q = "SELECT 1 FROM pg_database WHERE datname='" . addslashes($database) . "'";
+                $cmd = "PGPASSWORD=" . escapeshellarg($password) . " psql -h " . escapeshellarg($host) . " -p " . $port . " -U " . escapeshellarg($username) . " -tAc " . escapeshellarg($q) . " 2>&1";
+                $out = trim((string) $ssh->exec($cmd));
+
+                if (stripos($out, 'fatal') !== false || stripos($out, 'access denied') !== false) {
+                    return ['success' => false, 'error' => 'Cannot authenticate via psql on SSH server'];
+                }
+
+                if ($out === '1') {
+                    return ['success' => true, 'error' => null];
+                }
+                return ['success' => false, 'error' => 'Database does not exist on SSH server'];
+            }
+
+            return ['success' => false, 'error' => 'Unsupported driver for SSH verification: ' . $driver];
+        } catch (\Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Find an SSH server configuration by host alias from ~/.ssh/config.
+     */
+    private function findSshServerConfig(string $hostAlias): ?array
+    {
+        $configPath = $this->getHomeDirectory() . '/.ssh/config';
+        if (!file_exists($configPath)) {
+            return null;
+        }
+
+        $content = file_get_contents($configPath);
+        $lines = explode("\n", $content);
+
+        $currentHost = null;
+        foreach ($lines as $line) {
+            $trimmedLine = trim($line);
+
+            if (empty($trimmedLine)) {
+                continue;
+            }
+
+            if (preg_match('/^Host\s+(.+)$/i', $trimmedLine, $matches)) {
+                // Check if this is the host we're looking for
+                if ($currentHost !== null && $currentHost['host'] === $hostAlias) {
+                    return $currentHost;
+                }
+                // Skip global "Host *" block
+                if (trim($matches[1]) === '*') {
+                    $currentHost = null;
+                    continue;
+                }
+                $currentHost = [
+                    'host' => trim($matches[1]),
+                    'hostname' => '',
+                    'user' => '',
+                    'identity_file' => '',
+                    'port' => 22,
+                ];
+            } elseif ($currentHost) {
+                if (preg_match('/^HostName\s+(.+)$/i', $trimmedLine, $matches)) {
+                    $currentHost['hostname'] = trim($matches[1]);
+                } elseif (preg_match('/^User\s+(.+)$/i', $trimmedLine, $matches)) {
+                    $currentHost['user'] = trim($matches[1]);
+                } elseif (preg_match('/^IdentityFile\s+(.+)$/i', $trimmedLine, $matches)) {
+                    $currentHost['identity_file'] = trim($matches[1]);
+                } elseif (preg_match('/^Port\s+(\d+)$/i', $trimmedLine, $matches)) {
+                    $currentHost['port'] = (int) $matches[1];
+                }
+            }
+        }
+
+        // Check the last host
+        if ($currentHost !== null && $currentHost['host'] === $hostAlias) {
+            return $currentHost;
+        }
+
+        return null;
+    }
+
+    /**
+     * Connect to an SSH server using phpseclib.
+     */
+    private function connectToSshServer(array $hostConfig): \phpseclib3\Net\SSH2
+    {
+        $hostname = $hostConfig['hostname'];
+        $port = $hostConfig['port'] ?? 22;
+        $user = $hostConfig['user'] ?? 'ubuntu';
+        $identityFile = $this->expandPath($hostConfig['identity_file'] ?? '');
+
+        if (!file_exists($identityFile)) {
+            throw new \Exception("SSH key file not found: {$identityFile}");
+        }
+
+        $ssh = new \phpseclib3\Net\SSH2($hostname, $port);
+        $key = \phpseclib3\Crypt\PublicKeyLoader::load(file_get_contents($identityFile));
+
+        if (!$ssh->login($user, $key)) {
+            throw new \Exception("SSH authentication failed for {$user}@{$hostname}");
+        }
+
+        return $ssh;
+    }
+
+    /**
+     * Get the home directory reliably across different environments.
+     */
+    private function getHomeDirectory(): string
+    {
+        if (isset($_SERVER['HOME'])) {
+            return $_SERVER['HOME'];
+        }
+        if (isset($_SERVER['USERPROFILE'])) {
+            return $_SERVER['USERPROFILE'];
+        }
+        if (isset($_ENV['HOME'])) {
+            return $_ENV['HOME'];
+        }
+        if (function_exists('posix_getuid')) {
+            $userInfo = posix_getpwuid(posix_getuid());
+            if (isset($userInfo['dir'])) {
+                return $userInfo['dir'];
+            }
+        }
+        return base_path();
+    }
+
+    /**
+     * Expand ~ in file paths to the home directory.
+     */
+    private function expandPath(string $path): string
+    {
+        if (str_starts_with($path, '~/')) {
+            return $this->getHomeDirectory() . substr($path, 1);
+        }
+        return $path;
     }
 }

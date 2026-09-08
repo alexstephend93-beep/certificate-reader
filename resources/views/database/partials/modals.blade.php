@@ -59,7 +59,13 @@
                             <label class="form-label fw-bold">Notes</label>
                             <textarea class="form-control" id="dbNotes" rows="2" placeholder="Optional notes about this database"></textarea>
                         </div>
-                        
+
+                        <div class="col-md-12 mb-3">
+                            <label class="form-label fw-bold">SSH Server (for remote DB verification)</label>
+                            <input type="text" class="form-control" id="dbSshHost" placeholder="e.g., proxy_logs_paytest (from ~/.ssh/config)">
+                            <small class="text-muted">If the DB is only reachable from an SSH server, enter its host alias here. The connection will be verified through that server.</small>
+                        </div>
+
                         <div class="col-md-12 mb-4">
                             <button type="button" class="btn btn-outline-success w-100" id="testBeforeSaveBtn" onclick="testBeforeSave()">
                                 <i class="bi bi-plug"></i> Test Connection Before Saving
@@ -130,6 +136,20 @@
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
+                <div class="d-flex align-items-center justify-content-between mb-3 gap-2 flex-wrap">
+                    <div class="input-group input-group-sm" style="max-width: 320px;">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input type="text" class="form-control" id="connectionSearch" placeholder="Search name, host, database..." oninput="filterConnections(this.value)">
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="exportCredentials()" title="Export all credentials (JSON, no passwords)">
+                            <i class="bi bi-box-arrow-down"></i> Export
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="importCredentials()" title="Import credentials from a JSON file">
+                            <i class="bi bi-box-arrow-in-up"></i> Import
+                        </button>
+                    </div>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-hover" id="connectionsTable">
                         <thead>
@@ -142,59 +162,16 @@
                                 <th>Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="connectionsTableBody">
-                            @foreach($databases as $db)
-                            <tr>
-                                <td>
-                                    <div class="d-flex align-items-center gap-2">
-                                        <i class="bi bi-database"></i>
-                                        <strong>{{ $db->name }}</strong>
-                                        @if($db->is_default) 
-                                            <span class="badge bg-warning text-dark">Default</span>
-                                        @endif
-                                    </div>
-                                 </td>
-                                <td><span class="badge bg-info">{{ strtoupper($db->connection_name) }}</span> </td>
-                                <td><code>{{ $db->host }}:{{ $db->port }}</code> </td>
-                                <td>{{ $db->database }} </td>
-                                <td>
-                                    @if($db->is_active)
-                                        <span class="badge bg-success">Active</span>
-                                    @else
-                                        <span class="badge bg-danger">Inactive</span>
-                                    @endif
-                                 </td>
-                                <td>
-                                    <div class="btn-group btn-group-sm" role="group">
-                                        @if(!$db->is_default)
-                                            <button type="button" class="btn btn-outline-warning" onclick="setDefaultConnection({{ $db->id }})" title="Set as Default">
-                                                <i class="bi bi-star-fill"></i>
-                                            </button>
-                                        @endif
-                                        <button type="button" class="btn btn-outline-primary" onclick="editConnection({{ $db->id }})" title="Edit Connection">
-                                            <i class="bi bi-pencil-fill"></i>
-                                        </button>
-                                        <button type="button" class="btn btn-outline-danger" onclick="deleteConnection({{ $db->id }}, '{{ $db->name }}')" title="Delete Connection">
-                                            <i class="bi bi-trash-fill"></i>
-                                        </button>
-                                    </div>
-                                 </td>
-                             </tr>
-                            @endforeach
-                        </tbody>
+                        <tbody id="connectionsTableBody"></tbody>
                     </table>
-                </div>
-                
-                @if($databases->isEmpty())
-                    <div class="text-center py-5">
+                    <div class="text-center py-5 d-none" id="connectionsEmpty">
                         <i class="bi bi-database fs-1 text-muted"></i>
                         <p class="mt-2 text-muted">No database connections configured</p>
                         <button type="button" class="btn btn-primary mt-2" onclick="openAddConnectionModal()">
                             <i class="bi bi-plus-circle"></i> Add Your First Connection
                         </button>
-
                     </div>
-                @endif
+                </div>
             </div>
             <div class="modal-footer d-flex justify-content-between">
                 <button type="button" class="btn btn-primary" onclick="openAddConnectionModal()">Add New Connection</button>
@@ -426,6 +403,92 @@
                 <button type="button" class="btn btn-primary" id="closeImportBtn" data-bs-dismiss="modal" disabled>
                     <i class="bi bi-check-circle me-1"></i> Done
                 </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SSH Scan Preview Modal (Import from SSH - Phase 1) -->
+<div class="modal fade" id="sshScanModal" tabindex="-1" data-bs-backdrop="static" aria-labelledby="sshScanModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-xl" style="max-width: 1150px;">
+        <div class="modal-content" style="border-radius: 20px; overflow: hidden;">
+            <div class="modal-header" style="background: var(--gradient-primary); border-bottom: none;">
+                <h5 class="modal-title text-white" id="sshScanModalLabel">
+                    <i class="bi bi-search-heart me-2"></i>Scan SSH Servers for Databases
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" style="padding: 25px;">
+                <!-- Scan status -->
+                <div class="d-flex align-items-center mb-3">
+                    <span id="sshScanSpinner" class="spinner-border spinner-border-sm text-primary me-2" style="display: none;"></span>
+                    <span id="sshScanStatus" class="text-muted">Ready.</span>
+                    <span class="ms-3"><small class="text-muted">Scanned: </small><span id="sshScannedCount" class="fw-bold">0</span></span>
+                </div>
+
+                <!-- Summary counts -->
+                <div class="row g-2 mb-3">
+                    <div class="col-md-3"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-primary" id="sshScanTotal">0</h5><small class="text-muted">Projects</small></div></div></div>
+                    <div class="col-md-3"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-success" id="sshScanReady">0</h5><small class="text-muted">Ready</small></div></div></div>
+                    <div class="col-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-warning" id="sshScanMissing">0</h5><small class="text-muted">DB Missing</small></div></div></div>
+                    <div class="col-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-danger" id="sshScanUnreachable">0</h5><small class="text-muted">Unreachable</small></div></div></div>
+                    <div class="col-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-secondary" id="sshScanAlready">0</h5><small class="text-muted">Already</small></div></div></div>
+                </div>
+
+                <div id="sshScanSummary" class="small text-muted mb-2"></div>
+
+                <!-- Results table -->
+                <div class="table-responsive" style="max-height: 420px; overflow-y: auto;">
+                    <table class="table table-bordered table-striped table-sm" id="sshScanResultsTable">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th>Project Path (.env)</th>
+                                <th>Database</th>
+                                <th>Username (Host:Port)</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sshScanResults">
+                            <tr><td colspan="5" class="text-center text-muted py-5">Click scan or wait for scan to finish...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer justify-content-between">
+                <button type="button" class="btn btn-outline-secondary" id="rescanBtn" onclick="scanSshServers()">
+                    <i class="bi bi-arrow-repeat me-1"></i> Rescan
+                </button>
+                <div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="startImportBtn" onclick="startImportFromScan()" disabled>
+                        <i class="bi bi-download me-1"></i> Start Import
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Test All Connections Modal -->
+<div class="modal fade" id="testAllModal" tabindex="-1" data-bs-backdrop="static" aria-labelledby="testAllModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content" style="border-radius: 20px; overflow: hidden;">
+            <div class="modal-header" style="background: var(--gradient-primary); border-bottom: none;">
+                <h5 class="modal-title text-white" id="testAllModalLabel">
+                    <i class="bi bi-shield-check me-2"></i>Test All Connections
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="testAllBody" style="padding: 20px;">
+                <div class="text-center py-5">
+                    <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>
+                    <p class="mt-3" id="testAllStatus">Testing all database connections...</p>
+                </div>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+                <button type="button" class="btn btn-outline-primary" onclick="testAllConnections()">Re-test</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
             </div>
         </div>
     </div>
