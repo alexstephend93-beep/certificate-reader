@@ -23,6 +23,7 @@ Route::get('/dashboard/numlock/status', [DashboardController::class, 'getNumLock
 Route::group(['prefix' => 'certificate'], function () {
     Route::get('/', [CertificateController::class, 'index']);
     Route::post('/parse', [CertificateController::class, 'parse']);
+    Route::get('/download/{action}/{token}', [CertificateController::class, 'download']);
     Route::get('/download/{action}', [CertificateController::class, 'download']);
     Route::post('/check-domain', [CertificateController::class, 'checkDomain'])->name('certificate.check-domain');
 });

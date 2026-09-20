@@ -3,17 +3,38 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class CertificateController extends Controller
 {
+    /**
+     * Cache key prefix used to keep a downloadable copy of the certificate.
+     */
+    private const DOWNLOAD_CACHE_PREFIX = 'certificate_download:';
+
+    /**
+     * Fallback file name (without suffix) when no domain/CN is available.
+     */
+    private const DEFAULT_DOWNLOAD_NAME = 'certificate';
+
     public function index(Request $request)
     {
-        // Clear sessions on fresh load
-        if (!session()->has('success') && !session()->has('error') && !$request->has('action') && !$request->has('certificate') && !$request->hasFile('cert_file') && $request->method() === 'GET') {
-            session()->forget(['cert_data', 'original_cert', 'domain_name']);
+        // Only reset the previous result when the user explicitly starts over
+        // (the "Parse Another Certificate" button links to /certificate?new=1).
+        //
+        // Previously *every* GET request wiped cert_data/original_cert/domain_name
+        // from the session. Because the download links relied on that session data,
+        // reloading the page, opening it in a new tab or restoring it from the
+        // browser cache produced "Session expired or invalid request" as soon as
+        // the user clicked "Download Certificate".
+        if ($request->boolean('new')) {
+            session()->forget(['cert_data', 'original_cert', 'original_public_cert', 'domain_name', 'download_token']);
+
+            return redirect('/certificate');
         }
 
         return view('certificate.index');
@@ -237,17 +258,34 @@ class CertificateController extends Controller
             $fingerprint['sha256'] = openssl_x509_fingerprint($certContent, 'sha256');
         }
 
+        $certData = array_merge($result, ['additional_info' => $additionalInfo, 'fingerprint' => $fingerprint]);
+        $downloadToken = $this->storeDownloadPayload($certContent, $certData, $domain);
+
         session([
-            'cert_data' => array_merge($result, ['additional_info' => $additionalInfo, 'fingerprint' => $fingerprint]),
+            'cert_data' => $certData,
             'original_cert' => $certContent,
-            'domain_name' => $domain
+            'domain_name' => $domain,
+            'download_token' => $downloadToken,
         ]);
 
         return redirect('/certificate')->with('success', true);
     }
 
-    public function download($action)
+    public function download($action, $token = null)
     {
+        // A download token keeps a copy of the certificate in the cache, so the
+        // download keeps working even when the session was reset (page reload, a
+        // second tab, the browser back/forward cache or session expiry).
+        $payload = $this->retrieveDownloadPayload($token);
+
+        if ($payload) {
+            session([
+                'original_cert' => $payload['cert'] ?? null,
+                'cert_data' => $payload['data'] ?? null,
+                'domain_name' => $payload['domain'] ?? self::DEFAULT_DOWNLOAD_NAME,
+            ]);
+        }
+
         if ($action === 'cert' && session()->has('original_cert')) {
             $certContent = session('original_cert');
             $domain = session('domain_name', 'certificate');
@@ -323,6 +361,38 @@ class CertificateController extends Controller
         return redirect('/certificate')->with('error', 'Session expired or invalid request. Please parse the certificate again.');
      }
 
+    /**
+     * Keep a copy of the certificate (PEM + parsed data) in the cache under an
+     * unguessable token. The token is embedded in the download links so they
+     * never depend on fragile session/flash state.
+     */
+    private function storeDownloadPayload(string $certContent, array $certData, string $domain): string
+    {
+        $token = Str::random(48);
+
+        Cache::put(self::DOWNLOAD_CACHE_PREFIX . $token, [
+            'cert' => $certContent,
+            'data' => $certData,
+            'domain' => $domain,
+        ], now()->addDay());
+
+        return $token;
+    }
+
+    /**
+     * Resolve the certificate payload stored for the given download token.
+     */
+    private function retrieveDownloadPayload($token): ?array
+    {
+        if (!is_string($token) || !preg_match('/^[A-Za-z0-9]{16,64}$/', $token)) {
+            return null;
+        }
+
+        $payload = Cache::get(self::DOWNLOAD_CACHE_PREFIX . $token);
+
+        return is_array($payload) ? $payload : null;
+    }
+
     public function checkDomain(Request $request)
     {
         try {
@@ -366,6 +436,7 @@ class CertificateController extends Controller
             $certData = null;
             $error = null;
             $reverseDomains = [];
+            $downloadToken = null;
 
             // Determine whether input is IP or hostname
             $isInputIp = filter_var($input, FILTER_VALIDATE_IP);
@@ -418,6 +489,10 @@ class CertificateController extends Controller
                 
                     // Keep public cert PEM in JSON + session for download
                     $certData['public_cert_pem'] = $pemCert;
+
+                    // Store a tokenised copy so the public certificate can always
+                    // be downloaded, even without a live session.
+                    $downloadToken = $this->storeDownloadPayload($pemCert, $certData, $domain);
                 } else {
                     $error = "Could not parse certificate from {$domain}";
                 }
@@ -434,6 +509,7 @@ class CertificateController extends Controller
                     'ip_address' => $ipAddress,
                     'cert_data' => $certData,
                     'pem' => $pemCert,
+                    'download_token' => $downloadToken,
                     'error' => $error
                 ]);
             }
@@ -443,7 +519,8 @@ class CertificateController extends Controller
                     'cert_data' => $certData,
                     'domain_name' => $domain,
                     'original_cert' => $pemCert,
-                    'original_public_cert' => $pemCert
+                    'original_public_cert' => $pemCert,
+                    'download_token' => $downloadToken
                 ]);
                 return redirect('/certificate')->with('success', true);
             }

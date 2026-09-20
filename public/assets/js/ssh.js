@@ -2046,6 +2046,35 @@ function buildHealthDetails(health) {
     return detailsHtml;
 }
 
+/**
+ * Helper function to create a tooltip that auto-hides after a specified delay
+ * Tooltip will still be available on hover after auto-hide
+ * @param {HTMLElement} element - The element to attach the tooltip to
+ * @param {string} title - The tooltip text
+ * @param {string} placement - Tooltip placement (default: 'top')
+ * @param {number} delay - Time in ms before tooltip auto-hides (default: 5000)
+ */
+function autoHideTooltip(element, title, placement = 'top', delay = 5000) {
+    if (!element) return;
+    
+    // Set tooltip attributes
+    element.setAttribute('data-bs-toggle', 'tooltip');
+    element.setAttribute('data-bs-placement', placement);
+    element.setAttribute('data-bs-title', title);
+    element.setAttribute('title', title);
+    
+    // Initialize tooltip
+    if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
+        const tooltipInstance = new bootstrap.Tooltip(element);
+        
+        // Auto-hide tooltip popup after specified delay
+        // Using hide() instead of dispose() so tooltip still works on hover
+        setTimeout(() => {
+            tooltipInstance.hide();
+        }, delay);
+    }
+}
+
 function testSingleConnection(element, index, hostname, port) {
     const icon = element;  // element is already the <i> tag
     const spinner = element.nextElementSibling;
@@ -2105,16 +2134,8 @@ function testSingleConnection(element, index, hostname, port) {
             // Add success classes
             if (serverCard) {
                 serverCard.classList.add('connection-success');
-                // Add success tooltip with Bootstrap
-                serverCard.setAttribute('data-bs-toggle', 'tooltip');
-                serverCard.setAttribute('data-bs-placement', 'top');
-                serverCard.setAttribute('data-bs-title', `✅ Connection successful! Server ${hostData.host} is reachable.`);
-                serverCard.setAttribute('title', `✅ Connection successful! Server ${hostData.host} is reachable.`);
-                
-                // Initialize tooltip
-                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-                    new bootstrap.Tooltip(serverCard);
-                }
+                // Add success tooltip with auto-hide after 5 seconds
+                autoHideTooltip(serverCard, `✅ Connection successful! Server ${hostData.host} is reachable.`, 'top', 5000);
                 
                 // Add blink effect
                 serverCard.classList.add('blink-success');
@@ -2124,15 +2145,8 @@ function testSingleConnection(element, index, hostname, port) {
             }
             if (testWrapper) {
                 testWrapper.classList.add('test-success');
-                // Add tooltip to test wrapper
-                testWrapper.setAttribute('data-bs-toggle', 'tooltip');
-                testWrapper.setAttribute('data-bs-placement', 'top');
-                testWrapper.setAttribute('data-bs-title', '✅ Connection successful');
-                testWrapper.setAttribute('title', '✅ Connection successful');
-                
-                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-                    new bootstrap.Tooltip(testWrapper);
-                }
+                // Add tooltip to test wrapper with auto-hide
+                autoHideTooltip(testWrapper, '✅ Connection successful', 'top', 5000);
                 
                 // Add blink effect for icon
                 icon.classList.add('blink-icon');
@@ -2144,11 +2158,8 @@ function testSingleConnection(element, index, hostname, port) {
             icon.style.color = '#10b981';
             icon.classList.add('connection-tested-success');
             
-            // Add tooltip to icon
-            icon.setAttribute('data-bs-toggle', 'tooltip');
-            icon.setAttribute('data-bs-placement', 'top');
-            icon.setAttribute('data-bs-title', '✅ Connection successful');
-            icon.setAttribute('title', '✅ Connection successful');
+            // Add tooltip to icon with auto-hide
+            autoHideTooltip(icon, '✅ Connection successful', 'top', 5000);
             
         } else {
             const errorMessage = data.message || 'Connection failed';
@@ -2156,16 +2167,8 @@ function testSingleConnection(element, index, hostname, port) {
             // Add failed classes
             if (serverCard) {
                 serverCard.classList.add('connection-failed');
-                // Add error tooltip with Bootstrap showing the actual error
-                serverCard.setAttribute('data-bs-toggle', 'tooltip');
-                serverCard.setAttribute('data-bs-placement', 'top');
-                serverCard.setAttribute('data-bs-title', `❌ Connection failed: ${errorMessage}`);
-                serverCard.setAttribute('title', `❌ Connection failed: ${errorMessage}`);
-                
-                // Initialize tooltip
-                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-                    new bootstrap.Tooltip(serverCard);
-                }
+                // Add error tooltip with auto-hide after 5 seconds
+                autoHideTooltip(serverCard, `❌ Connection failed: ${errorMessage}`, 'top', 5000);
                 
                 // Add blink effect
                 serverCard.classList.add('blink-failed');
@@ -2175,15 +2178,8 @@ function testSingleConnection(element, index, hostname, port) {
             }
             if (testWrapper) {
                 testWrapper.classList.add('test-failed');
-                // Add tooltip to test wrapper with error
-                testWrapper.setAttribute('data-bs-toggle', 'tooltip');
-                testWrapper.setAttribute('data-bs-placement', 'top');
-                testWrapper.setAttribute('data-bs-title', `❌ ${errorMessage}`);
-                testWrapper.setAttribute('title', `❌ ${errorMessage}`);
-                
-                if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-                    new bootstrap.Tooltip(testWrapper);
-                }
+                // Add tooltip to test wrapper with auto-hide
+                autoHideTooltip(testWrapper, `❌ ${errorMessage}`, 'top', 5000);
                 
                 // Add blink effect for icon
                 icon.classList.add('blink-icon');
@@ -2195,16 +2191,8 @@ function testSingleConnection(element, index, hostname, port) {
             icon.style.color = '#ef4444';
             icon.classList.add('connection-tested-failed');
             
-            // Add tooltip to icon with error
-            icon.setAttribute('data-bs-toggle', 'tooltip');
-            icon.setAttribute('data-bs-placement', 'top');
-            icon.setAttribute('data-bs-title', `❌ ${errorMessage}`);
-            icon.setAttribute('title', `❌ ${errorMessage}`);
-        }
-        
-        // Initialize tooltips for the icon if bootstrap is available
-        if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-            new bootstrap.Tooltip(icon);
+            // Add tooltip to icon with auto-hide
+            autoHideTooltip(icon, `❌ ${errorMessage}`, 'top', 5000);
         }
     })
     .catch(error => {
@@ -2217,15 +2205,8 @@ function testSingleConnection(element, index, hostname, port) {
         // Add failed classes
         if (serverCard) {
             serverCard.classList.add('connection-failed');
-            // Add error tooltip
-            serverCard.setAttribute('data-bs-toggle', 'tooltip');
-            serverCard.setAttribute('data-bs-placement', 'top');
-            serverCard.setAttribute('data-bs-title', `❌ Connection test failed: ${errorMessage}`);
-            serverCard.setAttribute('title', `❌ Connection test failed: ${errorMessage}`);
-            
-            if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-                new bootstrap.Tooltip(serverCard);
-            }
+            // Add error tooltip with auto-hide
+            autoHideTooltip(serverCard, `❌ Connection test failed: ${errorMessage}`, 'top', 5000);
             
             // Add blink effect
             serverCard.classList.add('blink-failed');
@@ -2235,15 +2216,8 @@ function testSingleConnection(element, index, hostname, port) {
         }
         if (testWrapper) {
             testWrapper.classList.add('test-failed');
-            // Add tooltip to test wrapper
-            testWrapper.setAttribute('data-bs-toggle', 'tooltip');
-            testWrapper.setAttribute('data-bs-placement', 'top');
-            testWrapper.setAttribute('data-bs-title', `❌ ${errorMessage}`);
-            testWrapper.setAttribute('title', `❌ ${errorMessage}`);
-            
-            if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-                new bootstrap.Tooltip(testWrapper);
-            }
+            // Add tooltip to test wrapper with auto-hide
+            autoHideTooltip(testWrapper, `❌ ${errorMessage}`, 'top', 5000);
             
             // Add blink effect for icon
             icon.classList.add('blink-icon');
@@ -2255,15 +2229,8 @@ function testSingleConnection(element, index, hostname, port) {
         icon.style.color = '#ef4444';
         icon.classList.add('connection-tested-failed');
         
-        // Add tooltip to icon
-        icon.setAttribute('data-bs-toggle', 'tooltip');
-        icon.setAttribute('data-bs-placement', 'top');
-        icon.setAttribute('data-bs-title', `❌ ${errorMessage}`);
-        icon.setAttribute('title', `❌ ${errorMessage}`);
-        
-        if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-            new bootstrap.Tooltip(icon);
-        }
+        // Add tooltip to icon with auto-hide
+        autoHideTooltip(icon, `❌ ${errorMessage}`, 'top', 5000);
         
         console.error('Error:', error);
     });

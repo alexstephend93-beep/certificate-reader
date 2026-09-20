@@ -94,6 +94,10 @@
                 $sanitizedDomain = preg_replace('/[^a-zA-Z0-9.-]/', '_', session('domain_name', 'certificate'));
                 $certFilename = $sanitizedDomain . '_cert.txt';
                 $detailsFilename = $sanitizedDomain . '_details.txt';
+                // The download token keeps working even if the session is reset.
+                $downloadToken = session('download_token');
+                $certDownloadUrl = $downloadToken ? url('/certificate/download/cert/' . $downloadToken) : url('/certificate/download/cert');
+                $detailsDownloadUrl = $downloadToken ? url('/certificate/download/details/' . $downloadToken) : url('/certificate/download/details');
             @endphp
 
             <div class="text-end mb-4" data-aos="fade-left">
@@ -111,14 +115,14 @@
             </div>
 
             <div class="text-end mb-5" data-aos="fade-left">
-                <a href="{{ url('/certificate') }}" class="parse-another-btn">
+                <a href="{{ url('/certificate?new=1') }}" class="parse-another-btn">
                     <i class="bi bi-arrow-repeat fs-5"></i> Parse Another Certificate <i class="bi bi-box-arrow-up-right ms-2"></i>
                 </a>
             </div>
 
             <div class="row g-4 mb-5">
                 <div class="col-12 col-md-6" data-aos="fade-right">
-                    <a href="{{ url('/certificate/download/cert') }}" class="download-card">
+                    <a href="{{ $certDownloadUrl }}" class="download-card">
                         <div class="d-flex align-items-start gap-4">
                             <div class="bg-light p-4 rounded-circle flex-shrink-0">
                                 <i class="bi bi-file-lock2-fill fs-1" style="color: var(--color-primary);"></i>
@@ -133,7 +137,7 @@
                     </a>
                 </div>
                 <div class="col-12 col-md-6" data-aos="fade-left">
-                    <a href="{{ url('/certificate/download/details') }}" class="download-card">
+                    <a href="{{ $detailsDownloadUrl }}" class="download-card">
                         <div class="d-flex align-items-start gap-4">
                             <div class="bg-light p-4 rounded-circle flex-shrink-0">
                                 <i class="bi bi-file-text-fill fs-1" style="color: var(--color-secondary);"></i>
