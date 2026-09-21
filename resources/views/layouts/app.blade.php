@@ -184,7 +184,95 @@
             color: var(--color-accent); 
             text-shadow: 0 0 10px rgba(255,255,255,0.5); 
         }
-        
+
+        /* Collapsible nav groups (dropdown sections) */
+        .nav-group-toggle {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+            padding: 9px 20px;
+            background: transparent;
+            border: none;
+            border-radius: 12px;
+            color: rgba(255, 255, 255, 0.6);
+            font-family: var(--font-primary);
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            text-align: left;
+            cursor: pointer;
+            transition: var(--transition-smooth);
+        }
+        .nav-group-toggle > i.bi:not(.nav-group-arrow) { font-size: 1.05rem; }
+        .nav-group-toggle:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: white;
+        }
+        .nav-group-toggle:focus-visible {
+            outline: 2px solid rgba(255, 255, 255, 0.5);
+            outline-offset: 2px;
+        }
+        .nav-group-toggle .nav-group-arrow {
+            margin-left: auto;
+            font-size: 0.9rem;
+            transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .nav-group-toggle[aria-expanded="true"] { color: #fff; }
+        .nav-group-toggle[aria-expanded="true"] .nav-group-arrow {
+            transform: rotate(180deg);
+            color: var(--color-accent);
+        }
+        .nav-group.has-active > .nav-group-toggle { color: var(--color-accent); }
+
+        /* Smooth expand/collapse via grid rows (no JS height measuring) */
+        .nav-group-collapse {
+            display: grid;
+            grid-template-rows: 0fr;
+            transition: grid-template-rows 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .nav-group.open > .nav-group-collapse { grid-template-rows: 1fr; }
+        .nav-group-inner {
+            overflow: hidden;
+            min-height: 0;
+            visibility: hidden;
+            transition: visibility 0s 0.4s;
+        }
+        .nav-group.open > .nav-group-collapse > .nav-group-inner {
+            visibility: visible;
+            transition: visibility 0s 0s;
+        }
+        .nav-group-inner .nav-link {
+            padding: 10px 16px 10px 24px;
+            font-size: 0.95rem;
+            border-radius: 10px;
+        }
+        .nav-group-inner .nav-link i { font-size: 1.1rem; }
+        .nav-group-inner .nav-link.active {
+            box-shadow: inset 3px 0 0 var(--color-accent), 0 4px 15px rgba(0,0,0,0.1);
+        }
+        /* Staggered entrance for child links when a group expands */
+        .nav-group.open .nav-group-inner .nav-link {
+            animation: navChildIn 0.4s cubic-bezier(0.4, 0, 0.2, 1) backwards;
+        }
+        .nav-group.open .nav-group-inner .nav-link:nth-child(1) { animation-delay: 0.04s; }
+        .nav-group.open .nav-group-inner .nav-link:nth-child(2) { animation-delay: 0.08s; }
+        .nav-group.open .nav-group-inner .nav-link:nth-child(3) { animation-delay: 0.12s; }
+        .nav-group.open .nav-group-inner .nav-link:nth-child(4) { animation-delay: 0.16s; }
+        .nav-group.open .nav-group-inner .nav-link:nth-child(5) { animation-delay: 0.20s; }
+        .nav-group.open .nav-group-inner .nav-link:nth-child(6) { animation-delay: 0.24s; }
+        /* "translate" composes with the hover transform (no conflicts) */
+        @keyframes navChildIn {
+            from { opacity: 0; translate: -10px 0; }
+            to { opacity: 1; translate: 0 0; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .nav-group-collapse,
+            .nav-group-toggle .nav-group-arrow { transition: none; }
+            .nav-group.open .nav-group-inner .nav-link { animation: none; }
+        }
+
         /* Main Content Layout */
         .main-wrapper { 
             flex-grow: 1; 
@@ -341,6 +429,11 @@
             <h2><i class="bi bi-shield-lock-fill me-2"></i>NetTools</h2>
         </a>
         <nav class="sidebar-nav">
+            @php
+                $securityActive = request()->is('certificate*') || request()->is('ssl-matcher*') || request()->is('chain-validator*') || request()->is('hash-toolbox*') || request()->is('jwt*') || request()->is('hmac*');
+                $developmentActive = request()->is('api-tester*') || request()->is('base64*') || request()->is('command-storage*');
+                $serverActive = request()->is('ssh*') || request()->is('database*') || request()->is('admin-credentials*');
+            @endphp
             <div class="nav-item">
                 <a href="{{ url('/dashboard') }}" class="nav-link {{ request()->is('dashboard') || request()->is('/') ? 'active' : '' }}">
                     <i class="bi bi-grid-1x2-fill"></i>
@@ -352,68 +445,92 @@
                 </a>
             </div>
             
-            <!-- Security Tools Section -->
-            <div class="nav-item">
-                <div class="nav-section-title">Security Tools</div>
-                <a href="{{ url('/certificate') }}" class="nav-link {{ request()->is('certificate*') ? 'active' : '' }}">
-                    <i class="bi bi-file-earmark-lock-fill"></i>
-                    <span>Certificate Reader</span>
-                </a>
-                <a href="{{ url('/ssl-matcher') }}" class="nav-link {{ request()->is('ssl-matcher*') ? 'active' : '' }}">
-                    <i class="bi bi-shield-lock-fill"></i>
-                    <span>SSL Matcher</span>
-                </a>
-                <a href="{{ url('/chain-validator') }}" class="nav-link {{ request()->is('chain-validator*') ? 'active' : '' }}">
-                    <i class="bi bi-diagram-3-fill"></i>
-                    <span>Chain Validator</span>
-                </a>
-                <a href="{{ url('/hash-toolbox') }}" class="nav-link {{ request()->is('hash-toolbox*') ? 'active' : '' }}">
-                    <i class="bi bi-shield-lock-fill"></i>
-                    <span>Hash & Encryption</span>
-                </a>
-                <a href="{{ url('/jwt') }}" class="nav-link {{ request()->is('jwt*') ? 'active' : '' }}">
-                    <i class="bi bi-braces-asterisk"></i>
-                    <span>JWT Analyzer</span>
-                </a>
-                <a href="{{ url('/hmac') }}" class="nav-link {{ request()->is('hmac*') ? 'active' : '' }}">
-                    <i class="bi bi-pen-fill"></i>
-                    <span>HMAC Signature</span>
-                </a>
+            <!-- Security Tools Section (collapsible dropdown) -->
+            <div class="nav-item nav-group {{ $securityActive ? 'open has-active' : '' }}">
+                <button type="button" class="nav-group-toggle" aria-expanded="{{ $securityActive ? 'true' : 'false' }}" aria-controls="nav-security-panel">
+                    <i class="bi bi-shield-shaded"></i>
+                    <span>Security Tools</span>
+                    <i class="bi bi-chevron-down nav-group-arrow"></i>
+                </button>
+                <div class="nav-group-collapse" id="nav-security-panel">
+                    <div class="nav-group-inner">
+                        <a href="{{ url('/certificate') }}" class="nav-link {{ request()->is('certificate*') ? 'active' : '' }}">
+                            <i class="bi bi-file-earmark-lock-fill"></i>
+                            <span>Certificate Reader</span>
+                        </a>
+                        <a href="{{ url('/ssl-matcher') }}" class="nav-link {{ request()->is('ssl-matcher*') ? 'active' : '' }}">
+                            <i class="bi bi-shield-lock-fill"></i>
+                            <span>SSL Matcher</span>
+                        </a>
+                        <a href="{{ url('/chain-validator') }}" class="nav-link {{ request()->is('chain-validator*') ? 'active' : '' }}">
+                            <i class="bi bi-diagram-3-fill"></i>
+                            <span>Chain Validator</span>
+                        </a>
+                        <a href="{{ url('/hash-toolbox') }}" class="nav-link {{ request()->is('hash-toolbox*') ? 'active' : '' }}">
+                            <i class="bi bi-shield-lock-fill"></i>
+                            <span>Hash &amp; Encryption</span>
+                        </a>
+                        <a href="{{ url('/jwt') }}" class="nav-link {{ request()->is('jwt*') ? 'active' : '' }}">
+                            <i class="bi bi-braces-asterisk"></i>
+                            <span>JWT Analyzer</span>
+                        </a>
+                        <a href="{{ url('/hmac') }}" class="nav-link {{ request()->is('hmac*') ? 'active' : '' }}">
+                            <i class="bi bi-pen-fill"></i>
+                            <span>HMAC Signature</span>
+                        </a>
+                    </div>
+                </div>
             </div>
 
-            <!-- Development Tools Section -->
-            <div class="nav-item">
-                <div class="nav-section-title">Development Tools</div>
-                <a href="{{ url('/api-tester') }}" class="nav-link {{ request()->is('api-tester*') ? 'active' : '' }}">
-                    <i class="bi bi-globe2"></i>
-                    <span>API Tester</span>
-                </a>
-                <a href="{{ url('/base64') }}" class="nav-link {{ request()->is('base64*') ? 'active' : '' }}">
-                    <i class="bi bi-code-square"></i>
-                    <span>Base64 Codec</span>
-                </a>
-                <a href="{{ url('/command-storage') }}" class="nav-link {{ request()->is('command-storage*') ? 'active' : '' }}">
-                    <i class="bi bi-terminal-fill"></i>
-                    <span>Command Storage</span>
-                </a>
+            <!-- Development Tools Section (collapsible dropdown) -->
+            <div class="nav-item nav-group {{ $developmentActive ? 'open has-active' : '' }}">
+                <button type="button" class="nav-group-toggle" aria-expanded="{{ $developmentActive ? 'true' : 'false' }}" aria-controls="nav-development-panel">
+                    <i class="bi bi-tools"></i>
+                    <span>Development Tools</span>
+                    <i class="bi bi-chevron-down nav-group-arrow"></i>
+                </button>
+                <div class="nav-group-collapse" id="nav-development-panel">
+                    <div class="nav-group-inner">
+                        <a href="{{ url('/api-tester') }}" class="nav-link {{ request()->is('api-tester*') ? 'active' : '' }}">
+                            <i class="bi bi-globe2"></i>
+                            <span>API Tester</span>
+                        </a>
+                        <a href="{{ url('/base64') }}" class="nav-link {{ request()->is('base64*') ? 'active' : '' }}">
+                            <i class="bi bi-code-square"></i>
+                            <span>Base64 Codec</span>
+                        </a>
+                        <a href="{{ url('/command-storage') }}" class="nav-link {{ request()->is('command-storage*') ? 'active' : '' }}">
+                            <i class="bi bi-terminal-fill"></i>
+                            <span>Command Storage</span>
+                        </a>
+                    </div>
+                </div>
             </div>
 
-            <!-- Server Management Section -->
-            <div class="nav-item">
-                <div class="nav-section-title">Server Management</div>
-                <a href="{{ url('/ssh') }}" class="nav-link {{ request()->is('ssh*') ? 'active' : '' }}">
-                    <i class="bi bi-server"></i>
-                    <span>SSH Manager</span>
-                </a>
-                <!-- NEW: Database Manager -->
-                <a href="{{ url('/database') }}" class="nav-link {{ request()->is('database*') ? 'active' : '' }}">
-                    <i class="bi bi-database-fill-gear"></i>
-                    <span>Database Manager</span>
-                </a>
-                <a href="{{ url('/admin-credentials') }}" class="nav-link {{ request()->is('admin-credentials*') ? 'active' : '' }}">
-                    <i class="bi bi-key-fill"></i>
-                    <span>Admin Credentials</span>
-                </a>
+            <!-- Server Management Section (collapsible dropdown) -->
+            <div class="nav-item nav-group {{ $serverActive ? 'open has-active' : '' }}">
+                <button type="button" class="nav-group-toggle" aria-expanded="{{ $serverActive ? 'true' : 'false' }}" aria-controls="nav-server-panel">
+                    <i class="bi bi-hdd-network"></i>
+                    <span>Server Management</span>
+                    <i class="bi bi-chevron-down nav-group-arrow"></i>
+                </button>
+                <div class="nav-group-collapse" id="nav-server-panel">
+                    <div class="nav-group-inner">
+                        <a href="{{ url('/ssh') }}" class="nav-link {{ request()->is('ssh*') ? 'active' : '' }}">
+                            <i class="bi bi-server"></i>
+                            <span>SSH Manager</span>
+                        </a>
+                        <!-- NEW: Database Manager -->
+                        <a href="{{ url('/database') }}" class="nav-link {{ request()->is('database*') ? 'active' : '' }}">
+                            <i class="bi bi-database-fill-gear"></i>
+                            <span>Database Manager</span>
+                        </a>
+                        <a href="{{ url('/admin-credentials') }}" class="nav-link {{ request()->is('admin-credentials*') ? 'active' : '' }}">
+                            <i class="bi bi-key-fill"></i>
+                            <span>Admin Credentials</span>
+                        </a>
+                    </div>
+                </div>
             </div>
         </nav>
         
@@ -521,6 +638,24 @@
                     sidebar.classList.remove('show');
                 }
             }
+        });
+
+        // Collapsible sidebar groups (accordion behaviour: opening one closes the others)
+        document.querySelectorAll('.nav-group-toggle').forEach(function (toggle) {
+            toggle.addEventListener('click', function () {
+                var group = toggle.closest('.nav-group');
+                var wasOpen = group.classList.contains('open');
+
+                document.querySelectorAll('.nav-group.open').forEach(function (openGroup) {
+                    openGroup.classList.remove('open');
+                    openGroup.querySelector('.nav-group-toggle').setAttribute('aria-expanded', 'false');
+                });
+
+                if (!wasOpen) {
+                    group.classList.add('open');
+                    toggle.setAttribute('aria-expanded', 'true');
+                }
+            });
         });
     </script>
     @yield('scripts')

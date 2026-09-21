@@ -11,6 +11,15 @@ use Illuminate\Support\Facades\Log;
 
 class DashboardController extends Controller
 {
+    /** Cache key holding the Num Lock worker process ID */
+    protected const NUMLOCK_PID_KEY = 'numlock_toggle_pid';
+
+    /** Cache key holding the Unix timestamp when the worker was started */
+    protected const NUMLOCK_STARTED_AT_KEY = 'numlock_started_at';
+
+    /** Seconds between Num Lock toggles (must match the worker loop) */
+    protected const NUMLOCK_INTERVAL_SECONDS = 5;
+
     protected $sshParser;
     
     public function __construct(SshConfigParser $sshParser)
@@ -102,27 +111,22 @@ class DashboardController extends Controller
 
     public function startNumLockToggle(Request $request)
     {
-        $pidFile = storage_path('numlock_toggle.pid');
-        $countFile = storage_path('numlock_count.txt');
-        
+        // Process state lives in the cache - no state files on disk
+        $pid = Cache::get(self::NUMLOCK_PID_KEY);
+
         // Check if already running
-        if (file_exists($pidFile)) {
-            $pid = trim(file_get_contents($pidFile));
-            if ($pid && $this->isProcessRunning($pid)) {
-                $count = file_exists($countFile) ? intval(file_get_contents($countFile)) : 0;
-                return response()->json([
-                    'success' => false, 
-                    'message' => 'Already running',
-                    'is_running' => true,
-                    'count' => $count
-                ]);
-            }
-            @unlink($pidFile);
+        if ($pid && $this->isProcessRunning($pid)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Already running',
+                'is_running' => true,
+                'count' => $this->getNumLockToggleCount()
+            ]);
         }
-        
-        // Reset count file
-        file_put_contents($countFile, '0');
-        
+
+        // Clean up stale cache entries from a previous run
+        $this->forgetNumLockState();
+
         // Create a simple PHP script instead of bash (more reliable)
         $scriptPath = storage_path('scripts/numlock_toggle.php');
         $scriptDir = dirname($scriptPath);
@@ -130,22 +134,19 @@ class DashboardController extends Controller
             mkdir($scriptDir, 0755, true);
         }
         
-        // Create PHP script
+        // Create PHP script - stateless: it only toggles the key. The toggle
+        // count is derived from the cached start time, so the worker never
+        // writes anything to disk.
         $phpScript = '<?php
-$countFile = "' . $countFile . '";
-$pidFile = "' . $pidFile . '";
-file_put_contents($pidFile, getmypid());
-$i = 0;
+// Num Lock worker - toggles the key every ' . self::NUMLOCK_INTERVAL_SECONDS . ' seconds.
 while (true) {
-    $i++;
-    file_put_contents($countFile, $i);
-    // Try to toggle Num Lock using different methods
+    // Toggle Num Lock via xdotool (key down + key up)
     if (function_exists("shell_exec")) {
         shell_exec("xdotool key Num_Lock 2>/dev/null");
         usleep(100000);
         shell_exec("xdotool key Num_Lock 2>/dev/null");
     }
-    sleep(5);
+    sleep(' . self::NUMLOCK_INTERVAL_SECONDS . ');
 }
 ';
         
@@ -155,18 +156,21 @@ while (true) {
         $command = "nohup php {$scriptPath} > /dev/null 2>&1 & echo $!";
         $pid = shell_exec($command);
         $pid = trim($pid);
-        
+
         if ($pid && is_numeric($pid)) {
-            file_put_contents($pidFile, $pid);
+            // Track the worker in cache instead of flat files
+            Cache::forever(self::NUMLOCK_PID_KEY, $pid);
+            Cache::forever(self::NUMLOCK_STARTED_AT_KEY, now()->timestamp);
+
             return response()->json([
-                'success' => true, 
+                'success' => true,
                 'message' => 'Num Lock toggling started',
                 'is_running' => true,
                 'count' => 0
             ]);
         } else {
             return response()->json([
-                'success' => false, 
+                'success' => false,
                 'message' => 'Failed to start script',
                 'is_running' => false,
                 'count' => 0
@@ -176,27 +180,19 @@ while (true) {
 
     public function stopNumLockToggle(Request $request)
     {
-        $pidFile = storage_path('numlock_toggle.pid');
-        $countFile = storage_path('numlock_count.txt');
-        
         $stopped = false;
-        
-        if (file_exists($pidFile)) {
-            $pid = trim(file_get_contents($pidFile));
-            if ($pid && $this->isProcessRunning($pid)) {
-                exec("kill -9 {$pid} 2>/dev/null");
-                $stopped = true;
-            }
-            @unlink($pidFile);
+        $pid = Cache::get(self::NUMLOCK_PID_KEY);
+
+        if ($pid && $this->isProcessRunning($pid)) {
+            exec("kill -9 {$pid} 2>/dev/null");
+            $stopped = true;
         }
-        
-        // Reset count
-        if (file_exists($countFile)) {
-            file_put_contents($countFile, '0');
-        }
-        
+
+        // Remove the tracking state from cache
+        $this->forgetNumLockState();
+
         return response()->json([
-            'success' => true, 
+            'success' => true,
             'message' => $stopped ? 'Num Lock toggling stopped' : 'No running process found',
             'is_running' => false,
             'count' => 0
@@ -205,30 +201,24 @@ while (true) {
 
     public function getNumLockStatus(Request $request)
     {
-        $pidFile = storage_path('numlock_toggle.pid');
-        $countFile = storage_path('numlock_count.txt');
-        
-        $isRunning = false;
-        $count = 0;
-        
-        // Check if process is running
-        if (file_exists($pidFile)) {
-            $pid = trim(file_get_contents($pidFile));
-            if ($pid && $this->isProcessRunning($pid)) {
-                $isRunning = true;
-            } else {
-                @unlink($pidFile);
+        $pid = Cache::get(self::NUMLOCK_PID_KEY);
+        $isRunning = $pid && $this->isProcessRunning($pid);
+
+        // Self-heal: drop stale cache entries if the worker is gone
+        if (!$isRunning) {
+            if ($pid) {
+                $this->forgetNumLockState();
             }
+
+            return response()->json([
+                'is_running' => false,
+                'count' => 0
+            ]);
         }
-        
-        // Get count from file
-        if (file_exists($countFile)) {
-            $count = intval(file_get_contents($countFile));
-        }
-        
+
         return response()->json([
-            'is_running' => $isRunning,
-            'count' => $count
+            'is_running' => true,
+            'count' => $this->getNumLockToggleCount()
         ]);
     }
 
@@ -237,5 +227,30 @@ while (true) {
         if (!$pid) return false;
         exec("ps -p {$pid} 2>/dev/null", $output, $return_var);
         return $return_var === 0;
+    }
+
+    /**
+     * Remove the Num Lock tracking state from cache.
+     */
+    private function forgetNumLockState(): void
+    {
+        Cache::forget(self::NUMLOCK_PID_KEY);
+        Cache::forget(self::NUMLOCK_STARTED_AT_KEY);
+    }
+
+    /**
+     * Derive the number of toggles from the worker's cached start time.
+     * The worker fires its first toggle immediately and then once every
+     * NUMLOCK_INTERVAL_SECONDS, so no counter needs to be persisted anywhere.
+     */
+    private function getNumLockToggleCount(): int
+    {
+        $startedAt = Cache::get(self::NUMLOCK_STARTED_AT_KEY);
+
+        if (!$startedAt) {
+            return 0;
+        }
+
+        return (int) floor((now()->timestamp - (int) $startedAt) / self::NUMLOCK_INTERVAL_SECONDS) + 1;
     }
 }

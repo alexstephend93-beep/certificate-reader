@@ -1,12 +1,7 @@
 <?php
-$countFile = "/var/www/html/project/Certificate_reader_laravel/storage/numlock_count.txt";
-$pidFile = "/var/www/html/project/Certificate_reader_laravel/storage/numlock_toggle.pid";
-file_put_contents($pidFile, getmypid());
-$i = 0;
+// Num Lock worker - toggles the key every 5 seconds.
 while (true) {
-    $i++;
-    file_put_contents($countFile, $i);
-    // Try to toggle Num Lock using different methods
+    // Toggle Num Lock via xdotool (key down + key up)
     if (function_exists("shell_exec")) {
         shell_exec("xdotool key Num_Lock 2>/dev/null");
         usleep(100000);
