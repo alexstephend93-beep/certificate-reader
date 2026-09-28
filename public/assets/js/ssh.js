@@ -92,7 +92,7 @@ function searchServers() {
         return;
     }
 
-    const searchWords = searchTerm.split(' ').filter(Boolean);
+    const searchWords = searchTerm.split(/[ _]+/).filter(Boolean);
 
     loadedHosts = allHosts.filter(host => {
         // Fields that should be searchable, all normalized to lower case
@@ -149,8 +149,8 @@ if (searchInput) {
 
     // Add input event listener for real-time search
     searchInput.addEventListener('input', function(e) {
-        // Directly convert upper case to lower case while typing
         const el = e.target;
+        // Directly convert upper case to lower case while typing
         if (el.value && el.value !== el.value.toLowerCase()) {
             const cursorPos = el.selectionStart;
             el.value = el.value.toLowerCase();
@@ -160,6 +160,11 @@ if (searchInput) {
             } catch (err) {
                 // Ignore any selection range errors (e.g. some mobile browsers)
             }
+            e.preventDefault();
+        }
+        // Convert spaces to underscores (e.g. "1pay nsdl prod" => "1pay_nsdl_prod")
+        if (el.value.includes(' ')) {
+            el.value = el.value.replace(/ /g, '_');
             e.preventDefault();
         }
         searchServers();

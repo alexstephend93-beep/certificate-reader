@@ -3613,30 +3613,8 @@ class SshController extends Controller
             $discovery = $this->discoverProjectEnvFiles($ssh);
 
             // STEP 2 (fallback): Also discover projects via Apache config / domains.
-            $configContent = $this->getApacheConfigFromServer($ssh);
-            if ($configContent) {
-                foreach ($domains as $domain) {
-                    try {
-                        $docRoot = $this->findDocumentRootInConfig($configContent, $domain);
-                        if (!$docRoot) {
-                            continue;
-                        }
-                        $projectPath = $this->extractProjectPath($docRoot);
-                        $envPath = $this->findEnvFile($ssh, $projectPath);
-                        if ($envPath && !in_array($envPath, $discovery['env_paths'])) {
-                            $discovery['env_paths'][] = $envPath;
-                            $discovery['projects'][] = [
-                                'env_path' => $envPath,
-                                'project_path' => $projectPath,
-                                'source' => "domain: {$domain}",
-                                'domain' => $domain,
-                            ];
-                        }
-                    } catch (\Exception $e) {
-                        // Ignore domain discovery errors - directory scanning is the primary method
-                    }
-                }
-            }
+            // Concept: "based on the domain url, go to the respective directory's .env file".
+            $this->appendDomainEnvProjects($ssh, $domains, $discovery);
 
             if (empty($discovery['projects'])) {
                 return response()->json([
@@ -4115,6 +4093,16 @@ class SshController extends Controller
             // Discover project directories + .env files
             $discovery = $this->discoverProjectEnvFiles($ssh);
 
+            // STEP 2 (fallback): domain-based discovery - resolve each domain's
+            // DocumentRoot from the Apache config and read its .env file too.
+            $domains = $request->domains ?? [];
+            if (empty($domains)) {
+                $allHosts = $this->parseSshConfigWithDomains();
+                $thisHost = collect($allHosts)->firstWhere('host', $request->host);
+                $domains = $thisHost['domains'] ?? [];
+            }
+            $this->appendDomainEnvProjects($ssh, $domains, $discovery);
+
             $projects = [];
             foreach ($discovery['projects'] as $project) {
                 $envPath = $project['env_path'];
@@ -4142,12 +4130,12 @@ class SshController extends Controller
                     'already_imported' => false,
                 ];
 
-                                if (!empty($dbConfig['database']) && !empty($dbConfig['username'])) {
-                    // Skip the default Laravel skeleton .env (DB_DATABASE=laravel on
-                    // 127.0.0.1 with root/empty password) - nothing useful to import.
+                if (!empty($dbConfig['database']) && !empty($dbConfig['username'])) {
+                    // Default Laravel scaffold .env (mysql / 127.0.0.1:3306 / laravel /
+                    // root / empty password) -> ignore it and DON'T test the connection.
                     if ($this->isDefaultLaravelSkeleton($dbConfig)) {
-                        $scan['status'] = 'skipped';
-                        $scan['reason'] = 'Default skeleton .env (DB_DATABASE=laravel)';
+                        $scan['status'] = 'default-skeleton';
+                        $scan['reason'] = 'Default .env (DB_CONNECTION=mysql, DB_HOST=127.0.0.1, DB_PORT=3306, DB_DATABASE=laravel, DB_USERNAME=root, DB_PASSWORD=empty) - ignored, connection not tested';
                     } else {
                         $testCredential = new DatabaseCredential([
                             'connection_name' => $dbConfig['connection'],
@@ -4270,6 +4258,43 @@ class SshController extends Controller
             'projects' => $projects,
             'count' => count($projects),
         ];
+    }
+
+    /**
+     * Domain-based project discovery: resolve each configured domain's
+     * DocumentRoot from the Apache config, walk up to the project folder
+     * and append its .env file to the discovery result (deduped by env path).
+     * Implements the concept: "based on the domain url, go to the respective
+     * directory's .env file". Used by both the scan preview and the import.
+     */
+    private function appendDomainEnvProjects(SSH2 $ssh, array $domains, array &$discovery): void
+    {
+        $configContent = $this->getApacheConfigFromServer($ssh);
+        if (!$configContent) {
+            return;
+        }
+
+        foreach ($domains as $domain) {
+            try {
+                $docRoot = $this->findDocumentRootInConfig($configContent, $domain);
+                if (!$docRoot) {
+                    continue;
+                }
+                $projectPath = $this->extractProjectPath($docRoot);
+                $envPath = $this->findEnvFile($ssh, $projectPath);
+                if ($envPath && !in_array($envPath, $discovery['env_paths'])) {
+                    $discovery['env_paths'][] = $envPath;
+                    $discovery['projects'][] = [
+                        'env_path' => $envPath,
+                        'project_path' => $projectPath,
+                        'source' => "domain: {$domain}",
+                        'domain' => $domain,
+                    ];
+                }
+            } catch (\Exception $e) {
+                // Ignore domain discovery errors - directory scanning is the primary method
+            }
+        }
     }
 
     /**
@@ -4422,11 +4447,18 @@ class SshController extends Controller
     private function isDefaultLaravelSkeleton(array $dbConfig): bool
     {
         $host = trim((string) ($dbConfig['host'] ?? ''));
+        $password = $dbConfig['password'] ?? '';
+
+        // The untouched Laravel scaffold ships exactly this DB block:
+        // DB_CONNECTION=mysql / DB_HOST=127.0.0.1 / DB_PORT=3306 /
+        // DB_DATABASE=laravel / DB_USERNAME=root / DB_PASSWORD=(empty)
+        // -> ignore it, no connection test needed.
         return ($dbConfig['connection'] ?? 'mysql') === 'mysql'
             && in_array($host, ['127.0.0.1', 'localhost', ''], true)
+            && (int) ($dbConfig['port'] ?? 3306) === 3306
             && ($dbConfig['database'] ?? '') === 'laravel'
             && ($dbConfig['username'] ?? '') === 'root'
-            && (($dbConfig['password'] ?? '') === '' || ($dbConfig['password'] ?? '') === null);
+            && ($password === '' || $password === null);
     }
 
     /**

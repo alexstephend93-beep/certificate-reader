@@ -2016,7 +2016,7 @@ async function scanSshServers() {
  */
 function renderScanResults() {
     const scanTable = document.getElementById('sshScanResults');
-    let totalProjects = 0, ready = 0, dbMissing = 0, unreachable = 0, already = 0, noConfig = 0;
+    let totalProjects = 0, ready = 0, dbMissing = 0, unreachable = 0, already = 0, ignored = 0, noConfig = 0;
 
     sshScanResults.forEach(entry => {
         entry.projects.forEach(p => {
@@ -2025,6 +2025,7 @@ function renderScanResults() {
             else if (p.status === 'db-missing') dbMissing++;
             else if (p.status === 'unreachable') unreachable++;
             else if (p.status === 'already-imported') already++;
+            else if (p.status === 'default-skeleton' || p.status === 'skipped') ignored++;
             else noConfig++;
         });
     });
@@ -2034,12 +2035,15 @@ function renderScanResults() {
     document.getElementById('sshScanMissing').textContent = dbMissing;
     document.getElementById('sshScanUnreachable').textContent = unreachable;
     document.getElementById('sshScanAlready').textContent = already;
+    const ignoredEl = document.getElementById('sshScanIgnored');
+    if (ignoredEl) ignoredEl.textContent = ignored;
 
     document.getElementById('sshScanSummary').innerHTML =
         `${totalProjects} project(s) found. <strong class="text-success">${ready}</strong> ready to import, ` +
         `<span class="text-warning">${dbMissing}</span> skipped (DB missing), ` +
         `<span class="text-danger">${unreachable}</span> unreachable, ` +
-        `<span class="text-secondary">${already}</span> already imported.`;
+        `<span class="text-secondary">${already}</span> already imported, ` +
+        `<span class="text-muted">${ignored}</span> ignored (default .env - connection not tested).`;
 
     let html = '';
     if (sshScanResults.length === 0) {
@@ -2088,6 +2092,8 @@ function statusBadgeHtml(status) {
         case 'db-missing': return '<span class="badge bg-warning text-dark">DB Missing</span>';
         case 'unreachable': return '<span class="badge bg-danger">Unreachable</span>';
         case 'already-imported': return '<span class="badge bg-secondary">Already Imported</span>';
+        case 'default-skeleton':
+        case 'skipped': return '<span class="badge bg-warning text-dark">Ignored - Default .env</span>';
         case 'no-db-config': return '<span class="badge bg-dark">No DB Config</span>';
         default: return '<span class="badge bg-secondary">Unknown</span>';
     }
@@ -2108,6 +2114,25 @@ function setScanUi(scanning, statusText) {
  * Start the actual import after the user confirms the scan preview.
  */
 function startImportFromScan() {
+    // Only import from servers that have at least one actionable project
+    // (ready / db-missing / unreachable / connection-failed) or whose scan
+    // errored. Servers whose projects were ALL default-skeleton (.env stubs),
+    // no-db-config or already-imported are ignored - per concept there is
+    // nothing left to test or insert for them, so no connection is attempted.
+    const actionableServers = sshScanResults
+        .filter(entry => {
+            if (entry.error) return true; // give failed scans one more try during import
+            return entry.projects.some(p =>
+                !['default-skeleton', 'skipped', 'no-db-config', 'already-imported'].includes(p.status)
+            );
+        })
+        .map(entry => entry.server);
+
+    if (actionableServers.length === 0) {
+        showToast('Nothing to import - every discovered project is a default .env stub (root@127.0.0.1:3306/laravel) or already imported.', 'warning');
+        return;
+    }
+
     const scanModalEl = document.getElementById('sshScanModal');
     if (scanModalEl) {
         const inst = bootstrap.Modal.getInstance(scanModalEl);
@@ -2115,7 +2140,7 @@ function startImportFromScan() {
     }
     setTimeout(() => {
         showSingleModal('importDbModal');
-        startSshDbImport(sshScanServers);
+        startSshDbImport(actionableServers);
     }, 300);
 }
 

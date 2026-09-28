@@ -428,11 +428,12 @@
 
                 <!-- Summary counts -->
                 <div class="row g-2 mb-3">
-                    <div class="col-md-3"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-primary" id="sshScanTotal">0</h5><small class="text-muted">Projects</small></div></div></div>
-                    <div class="col-md-3"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-success" id="sshScanReady">0</h5><small class="text-muted">Ready</small></div></div></div>
-                    <div class="col-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-warning" id="sshScanMissing">0</h5><small class="text-muted">DB Missing</small></div></div></div>
-                    <div class="col-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-danger" id="sshScanUnreachable">0</h5><small class="text-muted">Unreachable</small></div></div></div>
-                    <div class="col-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-secondary" id="sshScanAlready">0</h5><small class="text-muted">Already</small></div></div></div>
+                    <div class="col-md-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-primary" id="sshScanTotal">0</h5><small class="text-muted">Projects</small></div></div></div>
+                    <div class="col-md-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-success" id="sshScanReady">0</h5><small class="text-muted">Ready</small></div></div></div>
+                    <div class="col-md-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-warning" id="sshScanMissing">0</h5><small class="text-muted">DB Missing</small></div></div></div>
+                    <div class="col-md-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-danger" id="sshScanUnreachable">0</h5><small class="text-muted">Unreachable</small></div></div></div>
+                    <div class="col-md-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-secondary" id="sshScanAlready">0</h5><small class="text-muted">Already</small></div></div></div>
+                    <div class="col-md-2"><div class="card border-0 bg-light"><div class="card-body text-center py-2"><h5 class="mb-0 text-dark" id="sshScanIgnored">0</h5><small class="text-muted">Ignored</small></div></div></div>
                 </div>
 
                 <div id="sshScanSummary" class="small text-muted mb-2"></div>

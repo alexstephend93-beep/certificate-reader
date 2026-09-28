@@ -432,7 +432,8 @@
             @php
                 $securityActive = request()->is('certificate*') || request()->is('ssl-matcher*') || request()->is('chain-validator*') || request()->is('hash-toolbox*') || request()->is('jwt*') || request()->is('hmac*');
                 $developmentActive = request()->is('api-tester*') || request()->is('base64*') || request()->is('command-storage*');
-                $serverActive = request()->is('ssh*') || request()->is('database*') || request()->is('admin-credentials*');
+                $serverActive = request()->is('ssh*') || request()->is('admin-credentials*');
+                $databaseActive = request()->is('database*');
             @endphp
             <div class="nav-item">
                 <a href="{{ url('/dashboard') }}" class="nav-link {{ request()->is('dashboard') || request()->is('/') ? 'active' : '' }}">
@@ -520,14 +521,30 @@
                             <i class="bi bi-server"></i>
                             <span>SSH Manager</span>
                         </a>
-                        <!-- NEW: Database Manager -->
-                        <a href="{{ url('/database') }}" class="nav-link {{ request()->is('database*') ? 'active' : '' }}">
-                            <i class="bi bi-database-fill-gear"></i>
-                            <span>Database Manager</span>
-                        </a>
                         <a href="{{ url('/admin-credentials') }}" class="nav-link {{ request()->is('admin-credentials*') ? 'active' : '' }}">
                             <i class="bi bi-key-fill"></i>
                             <span>Admin Credentials</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Database Tools Section (collapsible dropdown) -->
+            <div class="nav-item nav-group {{ $databaseActive ? 'open has-active' : '' }}">
+                <button type="button" class="nav-group-toggle" aria-expanded="{{ $databaseActive ? 'true' : 'false' }}" aria-controls="nav-database-panel">
+                    <i class="bi bi-database-fill"></i>
+                    <span>Database Tools</span>
+                    <i class="bi bi-chevron-down nav-group-arrow"></i>
+                </button>
+                <div class="nav-group-collapse" id="nav-database-panel">
+                    <div class="nav-group-inner">
+                        <a href="{{ url('/database') }}" class="nav-link {{ request()->is('database') ? 'active' : '' }}">
+                            <i class="bi bi-database-fill-gear"></i>
+                            <span>Database Manager</span>
+                        </a>
+                        <a href="{{ url('/database/payinstant-sql') }}" class="nav-link {{ request()->is('database/payinstant-sql*') ? 'active' : '' }}">
+                            <i class="bi bi-filetype-sql"></i>
+                            <span>PayInstant SQL &amp; Env Generator</span>
                         </a>
                     </div>
                 </div>
