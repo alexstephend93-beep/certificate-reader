@@ -145,6 +145,42 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Filter chips · sort · refresh (sits below the original toolbar row) -->
+            <div class="ssh-toolbar-filters">
+                <div class="ssh-filter-chips" role="group" aria-label="Filter SSH servers">
+                    <button type="button" class="ssh-chip active" data-filter="all" aria-pressed="true" onclick="applySshFilter('all')" title="Show every server">
+                        <i class="bi bi-collection-fill"></i> All
+                    </button>
+                    <button type="button" class="ssh-chip" data-filter="favorites" aria-pressed="false" onclick="applySshFilter('favorites')" title="Show favorites only">
+                        <i class="bi bi-star-fill"></i> Favorites
+                    </button>
+                    <button type="button" class="ssh-chip" data-filter="missing-key" aria-pressed="false" onclick="applySshFilter('missing-key')" title="Show servers whose identity file is missing on disk">
+                        <i class="bi bi-exclamation-triangle-fill"></i> Missing key
+                    </button>
+                    <button type="button" class="ssh-chip" data-filter="never-opened" aria-pressed="false" onclick="applySshFilter('never-opened')" title="Show servers you have never opened">
+                        <i class="bi bi-box-arrow-in-right"></i> Never opened
+                    </button>
+                </div>
+                <div class="ssh-filter-tools">
+                    <select id="sshSortSelect" class="form-select form-select-sm ssh-sort-select" onchange="applySshSort(this.value)" aria-label="Sort SSH servers">
+                        <option value="name">Favorites · Name (A–Z)</option>
+                        <option value="opened">Most opened first</option>
+                        <option value="recent">Recently connected</option>
+                        <option value="domains">Most domains</option>
+                    </select>
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="sshRefreshBtn" onclick="refreshSshServers()" title="Re-scan the SSH config and reload the list">
+                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                    </button>
+                    <button type="button" class="btn btn-outline-danger btn-sm" id="sshClearOpenCountsBtn" onclick="clearSshOpenCounts()" title="Reset every &quot;Opened&quot; counter — empties storage/app/ssh/open_counts.json">
+                        <i class="bi bi-eraser"></i> Clear count
+                    </button>
+                    <span class="ssh-last-updated" id="sshLastUpdated">Last updated: —</span>
+                </div>
+            </div>
+            <div class="ssh-shortcut-hint">
+                Tip: press <kbd>Ctrl</kbd>+<kbd>K</kbd> to focus search, <kbd>Esc</kbd> to clear.
+            </div>
         </div>
 
         <div class="stats-grid-ssh">
@@ -155,6 +191,10 @@
             <div class="stat-card-ssh">
                 <div id="validKeys" class="stat-number-ssh">0</div>
                 <div class="stat-label">Valid Keys</div>
+            </div>
+            <div class="stat-card-ssh">
+                <div id="totalOpens" class="stat-number-ssh">0</div>
+                <div class="stat-label">Total Opens</div>
             </div>
         </div>
 

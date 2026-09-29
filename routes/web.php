@@ -100,7 +100,6 @@ Route::prefix('ssh')->group(function () {
     Route::post('/record', [SshController::class, 'recordConnection'])->name('ssh.record');
     Route::get('/get-server/{host}', [SshController::class, 'getServer'])->name('ssh.get-server');
     Route::get('/command/{host}', [SshController::class, 'getSshCommand'])->name('ssh.command');
-    Route::get('/diagnose/{host}', [SshController::class, 'diagnoseServer'])->name('ssh.diagnose');
     Route::get('/proxy-health/{host}', [SshController::class, 'getProxyServerHealth'])->name('ssh.proxy-health');
     Route::delete('/delete/{host}', [SshController::class, 'deleteServer'])->name('ssh.delete');
     Route::post('/test-connectivity', [SshController::class, 'testConnectivity'])->name('ssh.test-connectivity');
@@ -150,6 +149,11 @@ Route::prefix('ssh')->group(function () {
     Route::post('/scan-projects', [SshController::class, 'scanProjects'])->name('ssh.scan-projects');
     Route::get('/import-db-status', [SshController::class, 'getImportPendingCount'])->name('ssh.import-db.status');
     Route::get('/list-with-domains', [SshController::class, 'getServersWithDomains'])->name('ssh.list-with-domains');
+
+    // Server "opened" counters (persisted in storage/app/ssh/open_counts.json)
+    Route::post('/record-open', [SshController::class, 'recordServerOpen'])->name('ssh.record.open');
+    Route::get('/open-counts', [SshController::class, 'getServerOpenCounts'])->name('ssh.open.counts');
+    Route::post('/clear-open-counts', [SshController::class, 'clearServerOpenCounts'])->name('ssh.clear.open.counts');
     
     // phpMyAdmin Info
     Route::get('/phpmyadmin-info/{id}', [SshController::class, 'getPhpMyAdminInfo'])->name('ssh.phpmyadmin.info');

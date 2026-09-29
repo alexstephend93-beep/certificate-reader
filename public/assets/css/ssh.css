@@ -2313,3 +2313,173 @@ body.ssl-picker-open .modal-backdrop { z-index: 1065; }
 .ssl-dir-crumb-seg { color: #059669; font-weight: 600; text-decoration: none; }
 .ssl-dir-crumb-seg:hover { text-decoration: underline; color: #047857; }
 .ssl-dir-crumb-sep { color: #94a3b8; }
+
+/* ============================================================
+ * TOOLBAR EXTRAS: filter chips · sort · refresh · last updated
+ * ============================================================ */
+.ssh-toolbar-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px dashed rgba(148, 163, 184, 0.35);
+}
+
+.ssh-filter-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.ssh-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: 50px;
+    border: 1px solid #e2e8f0;
+    background: #f8fafc;
+    color: #475569;
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.25s ease;
+}
+
+.ssh-chip:hover {
+    background: #eef2ff;
+    border-color: #c7d2fe;
+    color: #4338ca;
+    transform: translateY(-1px);
+}
+
+.ssh-chip.active {
+    background: var(--gradient-primary);
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(var(--color-primary-rgb), 0.28);
+}
+
+.ssh-chip .bi { font-size: 0.9rem; }
+
+.ssh-filter-tools {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.ssh-sort-select {
+    width: auto;
+    min-width: 195px;
+    border-radius: 50px;
+    font-size: 0.82rem;
+    padding-top: 6px;
+    padding-bottom: 6px;
+}
+
+.ssh-last-updated {
+    font-size: 0.78rem;
+    color: #64748b;
+    white-space: nowrap;
+}
+
+.ssh-shortcut-hint {
+    margin-top: 10px;
+    font-size: 0.75rem;
+    color: #94a3b8;
+}
+
+.ssh-shortcut-hint kbd {
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-size: 0.72rem;
+    color: #475569;
+    font-family: inherit;
+}
+
+/* Refresh button spinner */
+.ssh-spin { animation: sshSpin 0.9s linear infinite; }
+
+@keyframes sshSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* ============================================================
+ * MISSING IDENTITY FILE WARNING ON A SERVER CARD
+ * ============================================================ */
+.server-key-missing .detail-value {
+    color: #b45309;
+    font-weight: 600;
+}
+
+.server-key-missing .bi-exclamation-triangle-fill {
+    color: #f59e0b;
+}
+
+.server-card-wrapper[data-key-missing="1"] .server-card {
+    border-color: rgba(245, 158, 11, 0.55);
+    box-shadow: inset 3px 0 0 0 #f59e0b, 0 8px 20px -12px rgba(245, 158, 11, 0.35);
+}
+
+.server-card-wrapper[data-key-missing="1"] .server-card:hover {
+    border-color: #f59e0b;
+}
+
+@media (max-width: 768px) {
+    .ssh-filter-tools {
+        margin-left: 0;
+        width: 100%;
+    }
+
+    .ssh-sort-select {
+        flex: 1;
+        min-width: 0;
+    }
+}
+
+@media (max-width: 576px) {
+    .ssh-toolbar-filters,
+    .ssh-filter-chips {
+        justify-content: center;
+    }
+
+    .ssh-last-updated {
+        width: 100%;
+        text-align: center;
+    }
+}
+
+/* ============================================================
+ * "OPENED N×" COUNTER ROW ON A SERVER CARD
+ * (data comes from storage/app/ssh/open_counts.json)
+ * ============================================================ */
+.server-detail.server-open-count .bi-box-arrow-in-right {
+    color: #0ea5e9;
+}
+
+.server-detail.server-open-count .detail-value {
+    color: #0369a1;
+    font-weight: 600;
+}
+
+/* Muted style while the server has never been opened */
+.server-open-count-zero .bi-box-arrow-in-right {
+    color: #cbd5e1;
+}
+
+.server-open-count-zero .detail-value {
+    color: #94a3b8;
+    font-weight: 500;
+}
+

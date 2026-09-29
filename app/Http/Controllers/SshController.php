@@ -730,7 +730,12 @@ class SshController extends Controller
 
             $connectionHistory = Cache::get('ssh_connection_history', []);
 
-            $hosts = $dbServers->map(function ($server) use ($connectionHistory) {
+            // Per-host open counters, used for the "Opened N×" badge and sorting.
+            $openCounts = $this->readOpenCounts();
+
+            $hosts = $dbServers->map(function ($server) use ($connectionHistory, $openCounts) {
+                $open = $openCounts[$server->host] ?? null;
+
                 $host = [
                     'host' => $server->host,
                     'hostname' => $server->hostname,
@@ -741,6 +746,8 @@ class SshController extends Controller
                     'description' => $server->description ?? '',
                     'is_favorite' => $server->is_favorite,
                     'last_connected' => $connectionHistory[$server->host] ?? null,
+                    'open_count' => (int) ($open['count'] ?? 0),
+                    'last_opened' => $open['last_opened'] ?? null,
                 ];
 
                 // Add key status
@@ -769,6 +776,7 @@ class SshController extends Controller
                 'hosts' => $limitedHosts,
                 'totalServers' => $totalServers,
                 'validKeys' => $validKeys,
+                'totalOpens' => $this->totalOpenCount($openCounts),
                 'configPath' => $this->sshConfigPath,
                 'hasMore' => $hasMore,
                 'shownCount' => count($limitedHosts)
@@ -1157,6 +1165,177 @@ class SshController extends Controller
         return response()->json(['success' => true]);
     }
     
+    /* =========================================================
+     * Server "opened" counters
+     * ---------------------------------------------------------
+     * A single JSON file in storage keeps, per host, how many times the
+     * server was opened from the SSH Manager and when it was last opened.
+     * It powers the per-card "Opened N×" badge, the "Most opened" sort
+     * option and the "Never opened" quick filter.
+     * ========================================================= */
+
+    /**
+     * Absolute path of the JSON file holding the per-server open counters.
+     */
+    private function openCountsPath(): string
+    {
+        return storage_path('app/ssh/open_counts.json');
+    }
+
+    /**
+     * Read the open-counter map: [host => ['count' => int, 'last_opened' => ?string]].
+     * Plain-integer entries are normalised to the object shape.
+     */
+    private function readOpenCounts(): array
+    {
+        $path = $this->openCountsPath();
+
+        if (!is_file($path)) {
+            return [];
+        }
+
+        $raw = @file_get_contents($path);
+        if ($raw === false || trim($raw) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $counts = [];
+        foreach ($decoded as $host => $value) {
+            if (is_array($value)) {
+                $counts[(string) $host] = [
+                    'count' => (int) ($value['count'] ?? 0),
+                    'last_opened' => $value['last_opened'] ?? null,
+                ];
+            } else {
+                $counts[(string) $host] = [
+                    'count' => (int) $value,
+                    'last_opened' => null,
+                ];
+            }
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Persist the open-counter map (pretty printed so the file stays readable).
+     */
+    private function writeOpenCounts(array $counts): bool
+    {
+        $path = $this->openCountsPath();
+        $dir = dirname($path);
+
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return false;
+        }
+
+        // Keep an empty counter map as a JSON object ({}) instead of [].
+        $json = $counts
+            ? json_encode($counts, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+            : '{}';
+
+        return @file_put_contents($path, $json . PHP_EOL, LOCK_EX) !== false;
+    }
+
+    /**
+     * Sum of every recorded open (used for the "Total Opens" stat card).
+     */
+    private function totalOpenCount(array $counts): int
+    {
+        return (int) array_sum(array_map(function ($entry) {
+            return (int) ($entry['count'] ?? 0);
+        }, $counts));
+    }
+
+    /**
+     * Increment the open counter of one server.
+     * Called by the UI only for real "open" actions: Open project in VS Code,
+     * Browse Projects and Project Explorer (Browse Files & Folders).
+     * Other actions (Apache config, SSL install, proxy health, connection test,
+     * copy SSH command) do not increment it.
+     */
+    public function recordServerOpen(Request $request): JsonResponse
+    {
+        $request->validate([
+            'host' => 'required|string',
+        ]);
+
+        $host = trim((string) $request->input('host'));
+
+        // Only count hosts that really exist in the synced config/DB.
+        if (!SshServer::where('host', $host)->exists()) {
+            $this->syncServersFromConfig();
+        }
+
+        if (!SshServer::where('host', $host)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unknown server: ' . $host,
+            ], 404);
+        }
+
+        $counts = $this->readOpenCounts();
+        $entry = $counts[$host] ?? ['count' => 0, 'last_opened' => null];
+        $entry['count'] = (int) ($entry['count'] ?? 0) + 1;
+        $entry['last_opened'] = now()->toIso8601String();
+        $counts[$host] = $entry;
+
+        if (!$this->writeOpenCounts($counts)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to write ' . $this->openCountsPath(),
+            ], 500);
+        }
+
+        return response()->json([
+            'success' => true,
+            'host' => $host,
+            'count' => $entry['count'],
+            'last_opened' => $entry['last_opened'],
+            'total' => $this->totalOpenCount($counts),
+        ]);
+    }
+
+    /**
+     * Return every open counter plus the grand total.
+     */
+    public function getServerOpenCounts(): JsonResponse
+    {
+        $counts = $this->readOpenCounts();
+
+        return response()->json([
+            'success' => true,
+            'counts' => (object) $counts,
+            'total' => $this->totalOpenCount($counts),
+            'file' => $this->openCountsPath(),
+        ]);
+    }
+
+    /**
+     * Clear every open counter by emptying the JSON file.
+     */
+    public function clearServerOpenCounts(): JsonResponse
+    {
+        if (!$this->writeOpenCounts([])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to clear ' . $this->openCountsPath(),
+            ], 500);
+        }
+
+        return response()->json([
+            'success' => true,
+            'counts' => (object) [],
+            'total' => 0,
+            'file' => $this->openCountsPath(),
+        ]);
+    }
+
     /**
      * List projects in /var/www directory
      */
@@ -3277,102 +3456,32 @@ class SshController extends Controller
     }
 
     /**
-     * Diagnose SSH connection issues for a specific server
-     */
-    public function diagnoseServer($host)
-    {
-        try {
-            $hosts = $this->parseSshConfigWithDomains();
-            $targetHost = null;
-            
-            foreach ($hosts as $h) {
-                if ($h['host'] === $host) {
-                    $targetHost = $h;
-                    break;
-                }
-            }
-            
-            if (!$targetHost) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Server '{$host}' not found"
-                ]);
-            }
-            
-            $diagnostics = [];
-            
-            // 1. Check SSH config file
-            $diagnostics[] = "=== SSH CONFIG CHECK ===";
-            $diagnostics[] = "Config path: {$this->sshConfigPath}";
-            $diagnostics[] = "Config exists: " . (file_exists($this->sshConfigPath) ? "Yes" : "No");
-            
-            // 2. Check key file
-            $keyPath = $this->expandPath($targetHost['identity_file']);
-            $diagnostics[] = "\n=== KEY FILE CHECK ===";
-            $diagnostics[] = "Key path: {$keyPath}";
-            $diagnostics[] = "Key exists: " . (file_exists($keyPath) ? "Yes" : "No");
-            
-            if (file_exists($keyPath)) {
-                $perms = substr(sprintf('%o', fileperms($keyPath)), -4);
-                $diagnostics[] = "Key permissions: {$perms} (should be 400 or 600)";
-                $diagnostics[] = "Key size: " . filesize($keyPath) . " bytes";
-            }
-            
-            // 3. Test SSH connection
-            $diagnostics[] = "\n=== SSH CONNECTION TEST ===";
-            
-            $sshCommand = "ssh -v -o ConnectTimeout=10 -o IdentitiesOnly=yes -i {$keyPath} {$targetHost['user']}@{$targetHost['hostname']} -p {$targetHost['port']} 2>&1 | head -50";
-            exec($sshCommand, $output, $returnCode);
-            
-            $diagnostics[] = "Connection test output:";
-            $diagnostics = array_merge($diagnostics, $output);
-            
-            // 4. Check VS Code Remote SSH status
-            $diagnostics[] = "\n=== VS CODE REMOTE SSH ===";
-            $diagnostics[] = "To fix VS Code Remote SSH, try:";
-            $diagnostics[] = "1. Command Palette (Cmd+Shift+P) → 'Remote-SSH: Kill VS Code Server on Host'";
-            $diagnostics[] = "2. Then try reconnecting";
-            $diagnostics[] = "3. Or delete: ~/.vscode-server on the remote server";
-            
-            return response()->json([
-                'success' => true,
-                'host' => $host,
-                'diagnostics' => $diagnostics,
-                'ssh_command' => "ssh -i {$keyPath} {$targetHost['user']}@{$targetHost['hostname']} -p {$targetHost['port']}"
-            ]);
-            
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error: ' . $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
      * Get Proxy Server Health Information
-     * Returns basic system and proxy health info for the server
+     * Returns basic system and proxy health info for the server.
+     *
+     * Performance: every remote probe runs inside ONE (or two) SSH round-trips
+     * using marker-delimited batch output instead of ~40 sequential exec() calls.
      */
     public function getProxyServerHealth($host)
     {
         try {
             $hosts = $this->parseSshConfigWithDomains();
             $targetHost = null;
-            
+
             foreach ($hosts as $h) {
                 if ($h['host'] === $host) {
                     $targetHost = $h;
                     break;
                 }
             }
-            
+
             if (!$targetHost) {
                 return response()->json([
                     'success' => false,
                     'message' => "Server '{$host}' not found"
                 ]);
             }
-            
+
             $health = [
                 'server' => $host,
                 'hostname' => $targetHost['hostname'],
@@ -3380,17 +3489,18 @@ class SshController extends Controller
                 'overall_status' => 'unknown',
                 'details' => []
             ];
-            
+
             $keyPath = $this->expandPath($targetHost['identity_file']);
             $keyExists = file_exists($keyPath);
             $health['details']['key_exists'] = $keyExists;
             $health['details']['key_path'] = $keyPath;
             if ($keyExists) {
-                $perms = substr(sprintf('%o', fileperms($keyPath)), -4);
-                $health['details']['key_permissions'] = $perms;
+                $health['details']['key_permissions'] = substr(sprintf('%o', fileperms($keyPath)), -4);
                 $health['details']['key_size_bytes'] = filesize($keyPath);
             }
-            
+
+            $domains = (!empty($targetHost['domains']) && is_array($targetHost['domains'])) ? $targetHost['domains'] : [];
+
             try {
                 $sshConfig = [
                     'host' => $targetHost['host'],
@@ -3399,139 +3509,107 @@ class SshController extends Controller
                     'port' => $targetHost['port'] ?? 22,
                     'identity_file' => $keyPath,
                 ];
-                
-                $ssh = $this->connectToServer($sshConfig);
-                
-                if ($ssh && $ssh->isAuthenticated()) {
-                    $health['details']['uptime'] = trim($ssh->exec('uptime 2>/dev/null || echo N/A'));
-                    $health['details']['load_average'] = trim($ssh->exec('cat /proc/loadavg 2>/dev/null || echo N/A'));
-                    $health['details']['cpu_usage'] = trim($ssh->exec('top -bn1 2>/dev/null | grep "Cpu(s)" | head -1 || echo N/A'));
-                    $health['details']['memory'] = trim($ssh->exec('free -h 2>/dev/null | grep Mem || echo N/A'));
-                    $health['details']['disk_usage'] = trim($ssh->exec('df -h / 2>/dev/null | tail -1 || echo N/A'));
-                    $health['details']['cpu_info'] = trim($ssh->exec('lscpu 2>/dev/null | grep "Model name:" | head -1 || echo N/A'));
-                    $health['details']['cpu_count'] = trim($ssh->exec('nproc 2>/dev/null || echo N/A'));
-                    $health['details']['kernel'] = trim($ssh->exec('uname -r 2>/dev/null || echo N/A'));
-                    $health['details']['os'] = trim($ssh->exec('cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | head -1 | cut -d= -f2 || echo N/A'));
-                    $health['details']['architecture'] = trim($ssh->exec('uname -m 2>/dev/null || echo N/A'));
-                    $health['details']['hostname_resolved'] = trim($ssh->exec('hostname 2>/dev/null || echo N/A'));
-                    $health['details']['current_user'] = trim($ssh->exec('whoami 2>/dev/null || echo N/A'));
-                    $health['details']['home_directory'] = trim($ssh->exec('echo $HOME 2>/dev/null || echo N/A'));
-                    $health['details']['ssh_service'] = trim($ssh->exec('systemctl is-active sshd 2>/dev/null || systemctl is-active ssh 2>/dev/null || echo inactive'));
-                    $health['details']['fail2ban'] = trim($ssh->exec('systemctl is-active fail2ban 2>/dev/null || echo inactive'));
-                    $health['details']['ufw'] = trim($ssh->exec('ufw status 2>/dev/null | head -1 || echo N/A'));
-                    $health['details']['swap'] = trim($ssh->exec('free -h 2>/dev/null | grep Swap || echo N/A'));
-                    $health['details']['cpu_usage_top'] = trim($ssh->exec('top -bn1 2>/dev/null | head -20 || echo N/A'));
-                    $health['details']['memory_usage_top'] = trim($ssh->exec('ps aux --sort=-%mem 2>/dev/null | head -11 || echo N/A'));
-                    $health['details']['cpu_usage_ps'] = trim($ssh->exec('ps aux --sort=-%cpu 2>/dev/null | head -11 || echo N/A'));
-                    $health['details']['disk_io'] = trim($ssh->exec('iostat -d -x 1 2 2>/dev/null | head -20 || echo N/A'));
-                    $health['details']['zombie_processes'] = trim($ssh->exec('ps aux 2>/dev/null | awk "{print \$8}" | grep -c "Z" || echo N/A'));
-                    $health['details']['total_processes'] = trim($ssh->exec('ps aux 2>/dev/null | wc -l || echo N/A'));
-                    $health['details']['open_ports'] = trim($ssh->exec('ss -tlnp 2>/dev/null | grep LISTEN | head -10 || netstat -tlnp 2>/dev/null | grep LISTEN | head -10 || echo N/A'));
-                    $health['details']['established_connections'] = trim($ssh->exec('ss -tnp 2>/dev/null | grep ESTAB | wc -l || netstat -tnp 2>/dev/null | grep ESTAB | wc -l || echo N/A'));
-                    $health['details']['outbound_connections'] = trim($ssh->exec('ss -tnp state established 2>/dev/null | grep -v "127.0.0.1\|::1" | head -15 || echo N/A'));
-                    $health['details']['open_fd'] = trim($ssh->exec('cat /proc/sys/fs/file-nr 2>/dev/null || echo N/A'));
-                    $health['details']['fd_limit'] = trim($ssh->exec('ulimit -n 2>/dev/null || echo N/A'));
-                    $health['details']['inodes'] = trim($ssh->exec('df -i / 2>/dev/null | tail -1 || echo N/A'));
-                    $health['details']['ntp_sync'] = trim($ssh->exec('timedatectl 2>/dev/null | grep -i "ntp\|synchronized" || chronyc tracking 2>/dev/null | head -5 || echo N/A'));
-                    $health['details']['timezone'] = trim($ssh->exec('timedatectl 2>/dev/null | grep "Time zone" | awk "{print \$3}" || echo N/A'));
-                    $health['details']['language'] = trim($ssh->exec('locale 2>/dev/null | grep LANG | head -1 || echo N/A'));
-                    $health['details']['last_reboot'] = trim($ssh->exec('last reboot 2>/dev/null | head -3 || who -b 2>/dev/null || echo N/A'));
-                    $health['details']['sshd_failed_logins'] = trim($ssh->exec("journalctl -u sshd --since '24 hours ago' 2>/dev/null | grep -ci 'failed password' || grep -ci 'failed password' /var/log/auth.log 2>/dev/null || echo N/A"));
-                    $health['details']['systemd_failed_services'] = trim($ssh->exec('systemctl --failed --no-pager --plain 2>/dev/null | head -20 || echo N/A'));
-                    $health['details']['cron_status'] = trim($ssh->exec('systemctl is-active cron 2>/dev/null || systemctl is-active crond 2>/dev/null || echo N/A'));
-                    $health['details']['anacron_status'] = trim($ssh->exec('systemctl is-active anacron 2>/dev/null || echo N/A'));
-                    $health['details']['ssl_cert_check'] = trim($ssh->exec("echo | timeout 5 openssl s_client -connect 127.0.0.1:443 -servername \$(hostname) 2>/dev/null | openssl x509 -noout -startdate -enddate -issuer -subject -ext subjectAltName,signatureAlgorithm,serialNumber 2>/dev/null || echo N/A"));
-                    $health['details']['ssl_cert_check_raw'] = trim($ssh->exec("echo Q | timeout 5 openssl s_client -connect 127.0.0.1:443 -servername \$(hostname) 2>/dev/null | grep -E 'Protocol  |Cipher  ' || echo N/A"));
-                    
-                    if (!empty($targetHost['domains']) && is_array($targetHost['domains'])) {
-                        foreach ($targetHost['domains'] as $domain) {
-                            try {
-                                $safeDomain = escapeshellarg($domain);
-                                $sslRaw = trim($ssh->exec("echo | timeout 5 openssl s_client -connect 127.0.0.1:443 -servername {$safeDomain} 2>/dev/null | openssl x509 -noout -startdate -enddate -issuer -subject -ext subjectAltName,signatureAlgorithm,serialNumber 2>/dev/null || echo N/A"));
-                                if ($sslRaw && $sslRaw !== 'N/A') {
-                                    $key = 'ssl_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $domain);
-                                    $health['details'][$key] = $sslRaw;
-                                }
-                                $sslRaw2 = trim($ssh->exec("echo Q | timeout 5 openssl s_client -connect 127.0.0.1:443 -servername {$safeDomain} 2>/dev/null | grep -E 'Protocol  |Cipher  ' || echo N/A"));
-                                if ($sslRaw2 && $sslRaw2 !== 'N/A') {
-                                    $key2 = 'ssl_raw_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $domain);
-                                    $health['details'][$key2] = $sslRaw2;
-                                }
-                            } catch (\Throwable $e) {
-                                continue;
-                            }
-                        }
-                    }
 
-                    $sslConfigPaths = [
-                        '/etc/apache2/sites-enabled/000-default-le-ssl.conf',
-                        '/etc/apache2/sites-enabled/default-ssl.conf',
-                        '/etc/apache2/sites-enabled/001-ssl.conf',
-                        '/etc/httpd/conf.d/ssl.conf',
-                        '/etc/httpd/conf.d/default-ssl.conf',
-                        '/etc/apache2/sites-available/000-default-le-ssl.conf',
-                        '/etc/apache2/sites-available/default-ssl.conf',
+                $ssh = $this->connectToServer($sshConfig);
+
+                if ($ssh && $ssh->isAuthenticated()) {
+                    // All system / service / network probes in ONE round-trip.
+                    $batch = [
+                        'uptime' => 'uptime 2>/dev/null || echo N/A',
+                        'load_average' => 'cat /proc/loadavg 2>/dev/null || echo N/A',
+                        'cpu_usage' => 'top -bn1 2>/dev/null | grep "Cpu(s)" | head -1 || echo N/A',
+                        'memory' => 'free -h 2>/dev/null | grep Mem || echo N/A',
+                        'memory_mb' => 'free -m 2>/dev/null | grep Mem || echo N/A',
+                        'disk_usage' => 'df -h / 2>/dev/null | tail -1 || echo N/A',
+                        'cpu_info' => 'lscpu 2>/dev/null | grep "Model name:" | head -1 || echo N/A',
+                        'cpu_count' => 'nproc 2>/dev/null || echo N/A',
+                        'kernel' => 'uname -r 2>/dev/null || echo N/A',
+                        'os' => 'cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | head -1 | cut -d= -f2 || echo N/A',
+                        'architecture' => 'uname -m 2>/dev/null || echo N/A',
+                        'hostname_resolved' => 'hostname 2>/dev/null || echo N/A',
+                        'current_user' => 'whoami 2>/dev/null || echo N/A',
+                        'home_directory' => 'echo $HOME 2>/dev/null || echo N/A',
+                        'ssh_service' => 'systemctl is-active sshd 2>/dev/null || systemctl is-active ssh 2>/dev/null || echo inactive',
+                        'fail2ban' => 'systemctl is-active fail2ban 2>/dev/null || echo inactive',
+                        'ufw' => 'ufw status 2>/dev/null | head -1 || echo N/A',
+                        'swap' => 'free -h 2>/dev/null | grep Swap || echo N/A',
+                        'cpu_usage_top' => 'top -bn1 2>/dev/null | head -20 || echo N/A',
+                        'memory_usage_top' => 'ps aux --sort=-%mem 2>/dev/null | head -11 || echo N/A',
+                        'cpu_usage_ps' => 'ps aux --sort=-%cpu 2>/dev/null | head -11 || echo N/A',
+                        'disk_io' => 'iostat -d -x 1 2 2>/dev/null | head -20 || echo N/A',
+                        'zombie_processes' => 'ps aux 2>/dev/null | awk "{print \$8}" | grep -c "Z" || echo N/A',
+                        'total_processes' => 'ps aux 2>/dev/null | wc -l || echo N/A',
+                        'open_ports' => 'ss -tlnp 2>/dev/null | grep LISTEN | head -10 || netstat -tlnp 2>/dev/null | grep LISTEN | head -10 || echo N/A',
+                        'established_connections' => 'ss -tnp 2>/dev/null | grep ESTAB | wc -l || netstat -tnp 2>/dev/null | grep ESTAB | wc -l || echo N/A',
+                        'outbound_connections' => 'ss -tnp state established 2>/dev/null | grep -v "127.0.0.1\|::1" | head -15 || echo N/A',
+                        'open_fd' => 'cat /proc/sys/fs/file-nr 2>/dev/null || echo N/A',
+                        'fd_limit' => 'ulimit -n 2>/dev/null || echo N/A',
+                        'inodes' => 'df -i / 2>/dev/null | tail -1 || echo N/A',
+                        'ntp_sync' => 'timedatectl 2>/dev/null | grep -i "ntp\|synchronized" || chronyc tracking 2>/dev/null | head -5 || echo N/A',
+                        'timezone' => 'timedatectl 2>/dev/null | grep "Time zone" | awk "{print \$3}" || echo N/A',
+                        'language' => 'locale 2>/dev/null | grep LANG | head -1 || echo N/A',
+                        'last_reboot' => 'last reboot 2>/dev/null | head -3 || who -b 2>/dev/null || echo N/A',
+                        'sshd_failed_logins' => "journalctl -u sshd --since '24 hours ago' 2>/dev/null | grep -ci 'failed password' || grep -ci 'failed password' /var/log/auth.log 2>/dev/null || echo N/A",
+                        'systemd_failed_services' => 'systemctl --failed --no-pager --plain 2>/dev/null | head -20 || echo N/A',
+                        'cron_status' => 'systemctl is-active cron 2>/dev/null || systemctl is-active crond 2>/dev/null || echo N/A',
+                        'anacron_status' => 'systemctl is-active anacron 2>/dev/null || echo N/A',
+                        'https_listening' => 'ss -tln 2>/dev/null | grep -q ":443 " && echo yes || (netstat -tln 2>/dev/null | grep -q ":443 " && echo yes || echo no)',
+                        'apache_ssl_config' => 'for f in /etc/apache2/sites-enabled/000-default-le-ssl.conf /etc/apache2/sites-enabled/default-ssl.conf /etc/apache2/sites-enabled/001-ssl.conf /etc/httpd/conf.d/ssl.conf /etc/httpd/conf.d/default-ssl.conf /etc/apache2/sites-available/000-default-le-ssl.conf /etc/apache2/sites-available/default-ssl.conf; do [ -f "$f" ] && grep -q VirtualHost "$f" 2>/dev/null && { cat "$f"; break; }; done',
                     ];
 
-                    $sslConfigContent = null;
-                    foreach ($sslConfigPaths as $path) {
-                        $content = $ssh->exec("cat " . escapeshellarg($path) . " 2>/dev/null");
-                        if (!empty($content) && str_contains($content, 'VirtualHost')) {
-                            $sslConfigContent = $content;
-                            break;
-                        }
+                    $batchResults = $this->runRemoteHealthBatch($ssh, $batch);
+                    foreach ($batchResults as $batchKey => $batchValue) {
+                        $health['details'][$batchKey] = $batchValue;
                     }
 
-                    if (!$sslConfigContent) {
-                        $sslFiles = trim($ssh->exec("ls /etc/apache2/sites-enabled/ 2>/dev/null | grep -i ssl"));
-                        if (!empty($sslFiles)) {
-                            $first = explode("\n", $sslFiles)[0];
-                            $sslConfigContent = $ssh->exec("cat /etc/apache2/sites-enabled/" . escapeshellarg($first) . " 2>/dev/null");
-                        }
+                    // Derive numeric RAM values so the UI can highlight Used/Available RAM.
+                    $memParts = preg_split('/\s+/', trim((string) ($health['details']['memory_mb'] ?? '')));
+                    if (is_array($memParts) && count($memParts) >= 7 && is_numeric($memParts[1] ?? null)) {
+                        $health['details']['mem_total_mb'] = (int) $memParts[1];
+                        $health['details']['mem_used_mb'] = (int) ($memParts[2] ?? 0);
+                        $health['details']['mem_available_mb'] = (int) ($memParts[6] ?? 0);
                     }
 
-                    if ($sslConfigContent) {
-                        $sslDomains = [];
-                        preg_match_all('/ServerName\s+(\S+)/i', $sslConfigContent, $serverNameMatches);
-                        preg_match_all('/ServerAlias\s+(\S+)/i', $sslConfigContent, $serverAliasMatches);
-                        $sslDomains = array_unique(array_merge($serverNameMatches[1], $serverAliasMatches[1]));
+                    // Merge SSL domains discovered inside the Apache SSL vhost config.
+                    $apacheSslConfig = (string) ($health['details']['apache_ssl_config'] ?? '');
+                    if (!empty($apacheSslConfig) && str_contains($apacheSslConfig, 'VirtualHost')) {
+                        if (preg_match_all('/ServerName\s+(\S+)/i', $apacheSslConfig, $serverNameMatches)) {
+                            $domains = array_merge($domains, $serverNameMatches[1]);
+                        }
+                        if (preg_match_all('/ServerAlias\s+(\S+)/i', $apacheSslConfig, $serverAliasMatches)) {
+                            $domains = array_merge($domains, $serverAliasMatches[1]);
+                        }
+                    }
+                    $domains = array_values(array_unique(array_filter(array_map('trim', $domains))));
 
-                        $existingKeys = array_keys($health['details']);
-                        $existingDomains = [];
-                        foreach ($existingKeys as $ek) {
-                            if (preg_match('/^ssl(?:_raw_)?(.+)$/', $ek, $m)) {
-                                $existingDomains[] = str_replace('_', '.', $m[1]);
-                            }
+                    // SSL probes are the slowest, so only run them when 443 is listening.
+                    if (($health['details']['https_listening'] ?? 'no') === 'yes') {
+                        $sslBatch = [];
+
+                        $primaryCert = 'echo | timeout 3 openssl s_client -connect 127.0.0.1:443 -servername $(hostname) 2>/dev/null | openssl x509 -noout -startdate -enddate -issuer -subject -ext subjectAltName,signatureAlgorithm,serialNumber 2>/dev/null || echo N/A';
+                        $primaryRaw = "echo Q | timeout 3 openssl s_client -connect 127.0.0.1:443 -servername \$(hostname) 2>/dev/null | grep -E 'Protocol  |Cipher  ' || echo N/A";
+
+                        $sslBatch['ssl_cert_check'] = $primaryCert;
+                        $sslBatch['ssl_cert_check_raw'] = $primaryRaw;
+
+                        foreach ($domains as $domain) {
+                            $safeDomain = escapeshellarg($domain);
+                            $key = 'ssl_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $domain);
+                            $rawKey = 'ssl_raw_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $domain);
+                            $sslBatch[$key] = "echo | timeout 3 openssl s_client -connect 127.0.0.1:443 -servername {$safeDomain} 2>/dev/null | openssl x509 -noout -startdate -enddate -issuer -subject -ext subjectAltName,signatureAlgorithm,serialNumber 2>/dev/null || echo N/A";
+                            $sslBatch[$rawKey] = "echo Q | timeout 3 openssl s_client -connect 127.0.0.1:443 -servername {$safeDomain} 2>/dev/null | grep -E 'Protocol  |Cipher  ' || echo N/A";
                         }
 
-                        foreach ($sslDomains as $sslDomain) {
-                            $safeDomain = escapeshellarg($sslDomain);
-                            $key = 'ssl_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $sslDomain);
-                            if (isset($health['details'][$key])) continue;
-
-                            try {
-                                $sslRaw = trim($ssh->exec("echo | timeout 5 openssl s_client -connect 127.0.0.1:443 -servername {$safeDomain} 2>/dev/null | openssl x509 -noout -startdate -enddate -issuer -subject -ext subjectAltName,signatureAlgorithm,serialNumber 2>/dev/null || echo N/A"));
-                                if (!empty($sslRaw) && $sslRaw !== 'N/A') {
-                                    $health['details'][$key] = $sslRaw;
-                                }
-                            } catch (\Throwable $e) {
-                                continue;
-                            }
-
-                            try {
-                                $sslRaw2 = trim($ssh->exec("echo Q | timeout 5 openssl s_client -connect 127.0.0.1:443 -servername {$safeDomain} 2>/dev/null | grep -E 'Protocol  |Cipher  ' || echo N/A"));
-                                if (!empty($sslRaw2) && $sslRaw2 !== 'N/A') {
-                                    $key2 = 'ssl_raw_' . preg_replace('/[^a-zA-Z0-9_]/', '_', $sslDomain);
-                                    $health['details'][$key2] = $sslRaw2;
-                                }
-                            } catch (\Throwable $e) {
-                                continue;
+                        $sslResults = $this->runRemoteHealthBatch($ssh, $sslBatch);
+                        foreach ($sslResults as $sslKey => $sslValue) {
+                            if (!empty($sslValue) && $sslValue !== 'N/A') {
+                                $health['details'][$sslKey] = $sslValue;
                             }
                         }
                     }
-                    
-                    $os = strtolower($health['details']['os']);
-                    $pkgCmd = '';
+
+                    // Pending package updates (OS-aware).
+                    $os = strtolower((string) ($health['details']['os'] ?? ''));
                     if (str_contains($os, 'debian') || str_contains($os, 'ubuntu')) {
                         $pkgCmd = 'apt list --upgradable 2>/dev/null | wc -l';
                     } elseif (str_contains($os, 'centos') || str_contains($os, 'rhel') || str_contains($os, 'fedora')) {
@@ -3540,16 +3618,16 @@ class SshController extends Controller
                         $pkgCmd = 'true';
                     }
                     $health['details']['pending_updates'] = trim($ssh->exec($pkgCmd));
-                    
+
                     $updates = intval($health['details']['pending_updates'] ?? 0);
                     $overall = 'healthy';
-                    
+
                     if (!empty($health['details']['ssh_service']) && $health['details']['ssh_service'] !== 'active') {
                         $overall = 'error';
                     } elseif ($updates > 50) {
                         $overall = 'warning';
                     }
-                    
+
                     $health['overall_status'] = $overall;
                 } else {
                     $health['overall_status'] = 'error';
@@ -3560,19 +3638,62 @@ class SshController extends Controller
                 $health['overall_status'] = 'error';
                 $health['details']['error'] = $e->getMessage();
             }
-            
+
             return response()->json([
                 'success' => true,
                 'host' => $host,
                 'health' => $health
             ]);
-            
+
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Error: ' . $e->getMessage()
             ]);
         }
+    }
+
+    /**
+     * Run many remote commands inside a single SSH round-trip and split the
+     * output back into an associative array using unique markers.
+     */
+    private function runRemoteHealthBatch($ssh, array $commands): array
+    {
+        $script = '';
+        foreach ($commands as $key => $command) {
+            $script .= "echo '@@HEALTH_{$key}@@'\n";
+            $script .= $command . "\n";
+        }
+
+        $output = (string) $ssh->exec($script);
+
+        $results = [];
+        $currentKey = null;
+        $buffer = [];
+
+        foreach (preg_split('/\r\n|\r|\n/', $output) as $line) {
+            if (preg_match('/^@@HEALTH_([A-Za-z0-9_]+)@@$/', trim($line), $matches)) {
+                if ($currentKey !== null) {
+                    $results[$currentKey] = trim(implode("\n", $buffer));
+                }
+                $currentKey = $matches[1];
+                $buffer = [];
+            } elseif ($currentKey !== null) {
+                $buffer[] = $line;
+            }
+        }
+
+        if ($currentKey !== null) {
+            $results[$currentKey] = trim(implode("\n", $buffer));
+        }
+
+        foreach (array_keys($commands) as $key) {
+            if (!array_key_exists($key, $results)) {
+                $results[$key] = 'N/A';
+            }
+        }
+
+        return $results;
     }
 
     // ============================================

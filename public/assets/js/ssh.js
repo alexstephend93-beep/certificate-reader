@@ -3,6 +3,15 @@ let loadedHosts = [];
 let allHosts = [];
 let sshTestSuccessful = false;
 
+// --- Server list UI state (search pipeline, quick filters, sort, refresh) ---
+const SSH_RENDER_LIMIT = 200;         // max cards rendered at once (performance guard)
+const SSH_SEARCH_DEBOUNCE_MS = 180;   // debounce for the live search box
+let sshSearchDebounceTimer = null;    // pending debounced search render
+let sshSortMode = 'name';             // name | recent | domains
+let sshFilterMode = 'all';            // all | favorites | missing-key
+let sshLastLoadedAt = null;           // Date of the last successful /ssh/list load
+let sshLastUpdatedTimer = null;       // interval that refreshes the "last updated" label
+
 function loadServers() {
     console.log('Loading SSH servers...');
 
@@ -11,6 +20,8 @@ function loadServers() {
         console.error('serversGrid element not found');
         return;
     }
+
+    setSshListLoading(true);
 
     fetch('/ssh/list')
         .then(response => {
@@ -28,16 +39,17 @@ function loadServers() {
             }
 
             allHosts = data.hosts || [];
-            loadedHosts = data.hosts || [];
+            sshLastLoadedAt = new Date();
+            updateSshLastUpdatedLabel();
 
-            console.log('Loaded', loadedHosts.length, 'servers, total available:', data.totalServers);
+            console.log('Loaded', allHosts.length, 'servers, total available:', data.totalServers);
 
-            // Limit rendering to prevent performance issues
-            const maxRender = 200;
-            const hostsToRender = loadedHosts.slice(0, maxRender);
+            // Render through the shared pipeline so an active search term,
+            // quick filter and sort order survive a refresh.
+            searchServers();
 
-            renderServers(hostsToRender);
             updateStats(data.totalServers, data.validKeys);
+            updateSshTotalOpens(data.totalOpens || 0);
 
             // Show message if there are more servers
             if (data.hasMore) {
@@ -52,6 +64,8 @@ function loadServers() {
                 `;
                 grid.appendChild(moreMsg);
             }
+
+            setSshListLoading(false);
         })
         .catch(error => {
             console.error('Error loading servers:', error);
@@ -62,6 +76,7 @@ function loadServers() {
                     </div>
                 </div>
             `;
+            setSshListLoading(false);
         });
 }
 
@@ -78,6 +93,13 @@ function countValidKeys(hosts) {
 
 // Enhanced search function
 function searchServers() {
+    // An immediate call (Enter, Search button, filter chip, sort, refresh) always
+    // wins over a still-pending debounced render.
+    if (sshSearchDebounceTimer) {
+        clearTimeout(sshSearchDebounceTimer);
+        sshSearchDebounceTimer = null;
+    }
+
     const searchInputEl = document.getElementById('searchInput');
     const rawSearchTerm = searchInputEl ? searchInputEl.value : '';
     // Automatically convert upper case to lower case and normalize whitespace
@@ -85,10 +107,7 @@ function searchServers() {
 
     if (!searchTerm) {
         loadedHosts = [...allHosts];
-        renderServers(loadedHosts);
-        updateStats(allHosts.length, countValidKeys(allHosts));
-        const noResultsMsg = document.getElementById('noResultsMessage');
-        if (noResultsMsg) noResultsMsg.style.display = 'none';
+        finalizeSshRender(true);
         return;
     }
 
@@ -126,19 +145,331 @@ function searchServers() {
         );
     });
 
-    renderServers(loadedHosts);
-    updateStats(allHosts.length, countValidKeys(allHosts));
-
-    const noResultsMsg = document.getElementById('noResultsMessage');
-    if (noResultsMsg) {
-        noResultsMsg.style.display = loadedHosts.length === 0 ? 'block' : 'none';
-    }
+    finalizeSshRender(false);
 }
 
 function clearSearch() {
     document.getElementById('searchInput').value = '';
     searchServers();
 }
+
+// ===== Shared render pipeline: quick filter -> sort -> render cap =====
+
+/**
+ * Quick filter chips: all | favorites | missing-key.
+ * A key counts as missing when an identity file is configured but the file no
+ * longer exists on disk (mirrors the backend "Valid Keys" counter).
+ */
+function hostPassesQuickFilter(host) {
+    if (sshFilterMode === 'favorites') return !!host.is_favorite;
+    if (sshFilterMode === 'missing-key') return !!host.identity_file && !host.key_exists;
+    if (sshFilterMode === 'never-opened') return !(host.open_count > 0);
+    return true;
+}
+
+/**
+ * Sort the already-filtered list.
+ * The default mode intentionally keeps the order returned by the backend
+ * (favourites first, then host A–Z) so the initial view is unchanged.
+ * The other modes sort client-side and still float favourites to the top.
+ */
+function sortSshHosts(hosts) {
+    if (sshSortMode !== 'recent' && sshSortMode !== 'domains' && sshSortMode !== 'opened') {
+        return hosts;
+    }
+
+    const list = hosts.slice();
+    const byFavourite = (a, b) => (b.is_favorite ? 1 : 0) - (a.is_favorite ? 1 : 0);
+    const byHost = (a, b) => (a.host || '').localeCompare(b.host || '', undefined, { sensitivity: 'base', numeric: true });
+
+    if (sshSortMode === 'recent') {
+        list.sort((a, b) => {
+            const fav = byFavourite(a, b);
+            if (fav !== 0) return fav;
+            const ta = a.last_connected ? new Date(a.last_connected).getTime() : 0;
+            const tb = b.last_connected ? new Date(b.last_connected).getTime() : 0;
+            if (tb !== ta) return tb - ta;
+            return byHost(a, b);
+        });
+    } else if (sshSortMode === 'opened') {
+        // Most opened first (counts come from storage/app/ssh/open_counts.json)
+        list.sort((a, b) => {
+            const fav = byFavourite(a, b);
+            if (fav !== 0) return fav;
+            const oa = a.open_count || 0;
+            const ob = b.open_count || 0;
+            if (ob !== oa) return ob - oa;
+            return byHost(a, b);
+        });
+    } else {
+        list.sort((a, b) => {
+            const fav = byFavourite(a, b);
+            if (fav !== 0) return fav;
+            const da = (a.domains || []).length;
+            const db = (b.domains || []).length;
+            if (db !== da) return db - da;
+            return byHost(a, b);
+        });
+    }
+
+    return list;
+}
+
+/**
+ * Empty state shown when a search term or quick filter matches no server.
+ * Kept separate from renderServers() so the onboarding state
+ * ("No servers configured") is never shown for an active query.
+ */
+function renderFilteredEmptyState() {
+    const grid = document.getElementById('serversGrid');
+    if (!grid) return;
+    grid.innerHTML = `
+        <div class="col-12">
+            <div class="text-center py-5">
+                <i class="bi bi-funnel fs-1 text-muted"></i>
+                <h4 class="mt-3">No servers match the current view</h4>
+                <p class="text-muted">Adjust your search or pick another filter to see more servers.</p>
+            </div>
+        </div>
+    `;
+}
+
+/**
+ * Apply the quick filter, sort, render at most SSH_RENDER_LIMIT cards and keep
+ * `loadedHosts` in sync with the rendered slice — the per-card test button
+ * looks its host up by index, so the two must match exactly.
+ *
+ * @param {boolean} isEmptySearch true when the search box is empty (so the
+ *                                "no results" alert only shows for a real query)
+ */
+function finalizeSshRender(isEmptySearch) {
+    let list = loadedHosts.filter(hostPassesQuickFilter);
+    list = sortSshHosts(list);
+
+    const matchedCount = list.length;
+    loadedHosts = list.slice(0, SSH_RENDER_LIMIT);
+
+    const hasActiveQuery = !isEmptySearch || sshFilterMode !== 'all';
+
+    if (matchedCount === 0 && hasActiveQuery) {
+        // Search/filter returned nothing — do not show the "no servers configured"
+        // onboarding state, which would be misleading here.
+        renderFilteredEmptyState();
+    } else {
+        renderServers(loadedHosts);
+    }
+
+    updateStats(allHosts.length, countValidKeys(allHosts));
+
+    const noResultsMsg = document.getElementById('noResultsMessage');
+    if (noResultsMsg) {
+        noResultsMsg.style.display = (matchedCount === 0 && hasActiveQuery) ? 'block' : 'none';
+    }
+
+    // Tell the user when the render cap is hiding matching cards.
+    const grid = document.getElementById('serversGrid');
+    if (grid && matchedCount > loadedHosts.length) {
+        const moreMsg = document.createElement('div');
+        moreMsg.className = 'col-12 mt-3';
+        moreMsg.innerHTML = `
+            <div class="alert alert-info mb-0">
+                <i class="bi bi-info-circle me-2"></i>
+                Showing the first ${loadedHosts.length} of ${matchedCount} matching servers. Refine your search or filter to narrow the list.
+            </div>
+        `;
+        grid.appendChild(moreMsg);
+    }
+}
+
+// Quick filter chips (All / Favorites / Missing key)
+function applySshFilter(filter) {
+    sshFilterMode = filter || 'all';
+
+    document.querySelectorAll('.ssh-chip').forEach(function (chip) {
+        const isActive = chip.getAttribute('data-filter') === sshFilterMode;
+        chip.classList.toggle('active', isActive);
+        chip.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+
+    searchServers();
+}
+
+// Sort dropdown
+function applySshSort(mode) {
+    sshSortMode = mode || 'name';
+    searchServers();
+}
+
+// Toolbar Refresh: re-scan the SSH config on the server and reload the list
+function refreshSshServers() {
+    loadServers();
+}
+
+// Visual feedback while /ssh/list is in flight
+function setSshListLoading(isLoading) {
+    const btn = document.getElementById('sshRefreshBtn');
+    if (!btn) return;
+    btn.disabled = !!isLoading;
+    const icon = btn.querySelector('i');
+    if (icon) icon.className = isLoading ? 'bi bi-arrow-repeat ssh-spin' : 'bi bi-arrow-clockwise';
+}
+
+// Keep the "Last updated" label current
+function updateSshLastUpdatedLabel() {
+    const el = document.getElementById('sshLastUpdated');
+    if (!el) return;
+    el.textContent = sshLastLoadedAt ? 'Last updated: ' + formatTimeAgo(sshLastLoadedAt) : 'Last updated: —';
+}
+
+// Focus (and select) the server search box
+function focusSshSearch() {
+    const el = document.getElementById('searchInput');
+    if (!el) return;
+    el.focus();
+    try { el.select(); } catch (err) { /* ignore */ }
+}
+
+// Debounced render for the live search box
+function debounceSshSearch() {
+    if (sshSearchDebounceTimer) clearTimeout(sshSearchDebounceTimer);
+    sshSearchDebounceTimer = setTimeout(function () {
+        sshSearchDebounceTimer = null;
+        searchServers();
+    }, SSH_SEARCH_DEBOUNCE_MS);
+}
+
+/* ============================================================
+ * SERVER "OPENED" COUNTERS
+ * ------------------------------------------------------------
+ * The counter stored in storage/app/ssh/open_counts.json is
+ * incremented ONLY when a server is really "opened":
+ *   • Open project in VS Code
+ *   • Browse Projects
+ *   • Project Explorer (Browse Files & Folders)
+ *
+ * Other card actions (Apache config, SSL install, proxy health,
+ * connection test, copy SSH command) deliberately DO NOT count.
+ * ============================================================ */
+
+// Tell the backend that a server was opened and refresh its badge.
+function recordServerOpen(host) {
+    if (!host) return;
+
+    fetch('/ssh/record-open', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': csrfToken
+        },
+        body: JSON.stringify({ host: host })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (!data || !data.success) return;
+
+        // Keep the in-memory copy in sync (used by the "Most opened" sort
+        // and the "Never opened" filter).
+        allHosts.forEach(function (h) {
+            if (h.host === host) {
+                h.open_count = data.count;
+                h.last_opened = data.last_opened;
+            }
+        });
+
+        updateSshOpenBadge(host, data.count, data.last_opened);
+        updateSshTotalOpens(data.total);
+
+        // Deliberately not re-sorting here: cards jumping around mid-click
+        // would be disorienting — the new order applies on the next render.
+    })
+    .catch(error => console.warn('Could not record server open:', error));
+}
+
+// Update the "Opened N×" row of a single card without re-rendering the grid.
+function updateSshOpenBadge(host, count, lastOpened) {
+    document.querySelectorAll('.server-card').forEach(function (card) {
+        if (card.getAttribute('data-server-host') !== host) return;
+
+        const row = card.querySelector('.server-open-count');
+        if (row) {
+            const value = row.querySelector('.detail-value');
+            if (value) value.innerHTML = count > 0 ? 'Opened ' + count + '&times;' : 'Never opened';
+            row.classList.toggle('server-open-count-zero', !(count > 0));
+            row.setAttribute('title', lastOpened
+                ? 'Last opened ' + formatTimeAgo(lastOpened)
+                : (count > 0 ? 'Opened ' + count + ' time(s)' : 'This server has not been opened yet'));
+        }
+
+        const wrapper = card.closest('.server-card-wrapper');
+        if (wrapper) wrapper.setAttribute('data-open-count', String(count));
+    });
+}
+
+// Update the "Total Opens" stat card.
+function updateSshTotalOpens(total) {
+    const el = document.getElementById('totalOpens');
+    if (el) el.textContent = Number(total) || 0;
+}
+
+// Clear every open counter (empties storage/app/ssh/open_counts.json).
+function clearSshOpenCounts() {
+    if (!confirm('Clear the "Opened" counter for every server?\n\nThis empties the storage JSON file (storage/app/ssh/open_counts.json) and cannot be undone.')) {
+        return;
+    }
+
+    const btn = document.getElementById('sshClearOpenCountsBtn');
+    if (btn) btn.disabled = true;
+
+    fetch('/ssh/clear-open-counts', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': csrfToken
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (!data || !data.success) {
+            showToast('Could not clear the open counts', 'danger');
+            return;
+        }
+
+        allHosts.forEach(function (h) {
+            h.open_count = 0;
+            h.last_opened = null;
+        });
+
+        updateSshTotalOpens(0);
+        searchServers(); // re-render the cards with the counters reset
+        showToast('Open counts cleared', 'success');
+    })
+    .catch(function () {
+        showToast('Could not clear the open counts', 'danger');
+    })
+    .then(function () {
+        if (btn) btn.disabled = false;
+    });
+}
+
+// Delegated: only card actions tagged with data-count-open increment the counter
+// (Open project in VS Code, Browse Projects, Project Explorer).
+// Registered in the CAPTURE phase so inline handlers that call
+// event.stopPropagation() (e.g. the "open domain in VS Code" icon) are still counted.
+document.addEventListener('click', function (e) {
+    const target = e.target;
+    if (!target || typeof target.closest !== 'function') return;
+
+    const trigger = target.closest('[data-count-open]');
+    if (!trigger) return;
+
+    const card = trigger.closest('.server-card');
+    if (!card) return;
+
+    const host = card.getAttribute('data-server-host');
+    if (host) recordServerOpen(host);
+}, true);
 
 // Add event listeners for search input
 const searchInput = document.getElementById('searchInput');
@@ -167,7 +498,8 @@ if (searchInput) {
             el.value = el.value.replace(/ /g, '_');
             e.preventDefault();
         }
-        searchServers();
+        // Debounced so typing does not rebuild the whole grid on every keystroke
+        debounceSshSearch();
     });
 
     // Ensure search input is focusable and accessible
@@ -175,6 +507,35 @@ if (searchInput) {
     searchInput.style.pointerEvents = 'auto';
     searchInput.style.cursor = 'text';
 }
+
+// Keyboard shortcuts for the server search box:
+//   Ctrl/Cmd + K  and  "/"  -> focus the search box
+//   Esc                     -> clear the search (only when no modal is open)
+document.addEventListener('keydown', function (e) {
+    const target = e.target || {};
+    const tag = (target.tagName || '').toUpperCase();
+    const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable === true;
+
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        focusSshSearch();
+        return;
+    }
+
+    if (e.key === '/' && !isTyping && !document.querySelector('.modal.show')) {
+        e.preventDefault();
+        focusSshSearch();
+        return;
+    }
+
+    // Never interfere with Bootstrap's Esc-to-close while a modal is open
+    if (e.key === 'Escape' && !document.querySelector('.modal.show')) {
+        const el = document.getElementById('searchInput');
+        if (el && el.value) {
+            clearSearch();
+        }
+    }
+});
 
 function cleanDomainForDisplay(domain) {
     if (!domain) return '';
@@ -215,7 +576,7 @@ function renderServers(hosts) {
                     <i class="bi bi-link-45deg" title="Open in browser"
                        style="margin-left: 4px; cursor: pointer;"
                        onclick="event.stopPropagation(); window.open('https://${safeDomain}', '_blank')"></i>
-                    <i class="bi bi-code-square icon-vscode" title="Open project in VS Code"
+                    <i class="bi bi-code-square icon-vscode" data-count-open="1" title="Open project in VS Code"
                        style="margin-left: 4px; cursor: pointer;"
                        onclick="event.stopPropagation(); openSpecificDomainInVSCode(this)" 
                        data-domain="${cleanDomain}"
@@ -234,6 +595,17 @@ function renderServers(hosts) {
         const lastConnectedHtml = host.last_connected
             ? `<div class="last-connected"><i class="bi bi-clock-history"></i> Last connected: ${formatTimeAgo(host.last_connected)}</div>`
             : '';
+
+        // How many times this server has been opened (storage/app/ssh/open_counts.json)
+        const openCount = host.open_count || 0;
+        const openCountTitle = host.last_opened
+            ? 'Last opened ' + formatTimeAgo(host.last_opened)
+            : (openCount > 0 ? 'Opened ' + openCount + ' time(s)' : 'This server has not been opened yet');
+        const openCountHtml = `
+                        <div class="server-detail server-open-count${openCount > 0 ? '' : ' server-open-count-zero'}" title="${openCountTitle}">
+                            <i class="bi bi-box-arrow-in-right"></i>
+                            <span class="detail-value">${openCount > 0 ? 'Opened ' + openCount + '&times;' : 'Never opened'}</span>
+                        </div>`;
         
         const portHtml = port !== 22 
             ? `
@@ -247,7 +619,7 @@ function renderServers(hosts) {
         return `
             <div class="col-12 col-md-6 col-lg-4 server-card-wrapper" 
                  data-searchable="${[host.host, host.hostname, host.user, ...(host.domains || [])].join(' ').toLowerCase()}" 
-                 data-host="${host.host}">
+                 data-host="${host.host}" data-key-missing="${(host.identity_file && host.key_exists === false) ? '1' : '0'}">
                 <div class="server-card" 
                      data-server-host="${host.host}" 
                      data-server-index="${index}" 
@@ -293,14 +665,18 @@ function renderServers(hosts) {
                             </span>
                         </div>
                         ${portHtml}
+                        ${(host.identity_file && host.key_exists === false) ? `
+                        <div class="server-detail server-key-missing" title="The identity file configured for this server was not found on disk">
+                            <i class="bi bi-exclamation-triangle-fill"></i>
+                            <span class="detail-value">Key file missing</span>
+                        </div>` : ''}
                         ${domainsHtml}
                         
                         <div class="server-actions">
-                            <i class="bi bi-folder2-open icon-folder" title="Browse Projects" onclick='browseProjects("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
-                            <i class="bi bi-diagram-3 icon-explorer" title="Project Explorer (Browse Files & Folders)" onclick='openProjectExplorer("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port}, "/var/www")'></i>
+                            <i class="bi bi-folder2-open icon-folder" data-count-open="1" title="Browse Projects" onclick='browseProjects("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
+                            <i class="bi bi-diagram-3 icon-explorer" data-count-open="1" title="Project Explorer (Browse Files & Folders)" onclick='openProjectExplorer("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port}, "/var/www")'></i>
                             <i class="bi bi-file-earmark-text icon-config" title="View Apache Config" onclick='viewApacheConfig("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
                             <i class="bi bi-patch-check-fill icon-ssl" title="Install SSL Certificate (Let's Encrypt / Paid)" onclick='openSslInstallModal("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
-                            <i class="bi bi-heart-pulse icon-diagnose" title="Diagnose Connection" onclick="diagnoseServer('${host.host}', this)"></i>
                             ${vscodeDomainsHtml}
                              <i class="bi bi-clipboard2-check icon-copy" title="Copy SSH command" onclick='copySshCommand("${host.host}")'></i>
                              <i class="bi bi-heart-pulse icon-diagnose" title="Proxy Server Health Checkup" onclick='showProxyHealth("${host.host}", this)'></i>
@@ -309,6 +685,7 @@ function renderServers(hosts) {
                                 <span class="testing-spinner"></span>
                             </div>
                         </div>
+                        ${openCountHtml}
                         ${lastConnectedHtml}
                     </div>
                 </div>
@@ -1576,73 +1953,6 @@ function showApacheConfigModal(host, config, configPath) {
     apacheModal.show();
 }
 
-function diagnoseServer(host, element) {
-    // Add loading spinner to the button
-    const icon = element;  // element is already the <i> tag
-    const originalClass = icon.className;
-    icon.className = 'bi bi-hourglass-split';
-
-        fetch(`/ssh/diagnose/${host}`, {
-            headers: {
-                'Accept': 'application/json'
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-        // Restore original icon
-        icon.className = originalClass;
-
-        if (data.success) {
-            showDiagnosticsModal(host, data.diagnostics, data.ssh_command);
-        } else {
-            showToast('Failed to diagnose server: ' + data.message, 'danger');
-        }
-    })
-    .catch(error => {
-        // Restore original icon
-        icon.className = originalClass;
-        console.error('Error:', error);
-        showToast('Failed to diagnose server', 'danger');
-    });
-}
-
-function showDiagnosticsModal(host, diagnostics, sshCommand) {
-    let modalHtml = `
-        <div class="modal fade" id="diagnosticsModal" tabindex="-1">
-            <div class="modal-dialog modal-xl">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Connection Diagnostics for ${host}</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <strong>SSH Command:</strong>
-                            <code class="d-block p-2 bg-light rounded">${sshCommand}</code>
-                        </div>
-                        <pre class="bg-light p-3 rounded" style="max-height: 400px; overflow-y: auto;"><code>${diagnostics.map(d => escapeHtml(d)).join('\n')}</code></pre>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-
-    // Remove existing modal if present
-    const existingModal = document.getElementById('diagnosticsModal');
-    if (existingModal) existingModal.remove();
-
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-    const diagnosticsModalEl = document.getElementById('diagnosticsModal');
-    const diagnosticsModal = new bootstrap.Modal(diagnosticsModalEl);
-    // Auto-dispose dynamic modal after it is closed to avoid lingering state/backdrops
-    diagnosticsModalEl.addEventListener('hidden.bs.modal', function onHidden() {
-        diagnosticsModalEl.removeEventListener('hidden.bs.modal', onHidden);
-        diagnosticsModal.dispose();
-        diagnosticsModalEl.remove();
-    });
-    diagnosticsModal.show();
-}
-
 function copySshCommand(host) {
     // Get the SSH command from the server
     fetch(`/ssh/command/${host}`, {
@@ -1689,16 +1999,23 @@ function showProxyHealth(host, element) {
     
     showToast(`Checking proxy health for ${host}...`, 'info');
 
+    // Hard client-side timeout so the spinner always resolves, even if the
+    // remote host is slow or unreachable.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+
     fetch('/ssh/proxy-health/' + encodeURIComponent(host), {
         headers: {
             'Accept': 'application/json'
-        }
+        },
+        signal: controller.signal
     })
     .then(response => {
         if (!response.ok) throw new Error('HTTP ' + response.status);
         return response.json();
     })
     .then(data => {
+        clearTimeout(timeoutId);
         if (blinkInterval) clearInterval(blinkInterval);
         if (icon) icon.className = originalClass;
         if (data.success) {
@@ -1713,10 +2030,15 @@ function showProxyHealth(host, element) {
         }
     })
     .catch(error => {
+        clearTimeout(timeoutId);
         if (blinkInterval) clearInterval(blinkInterval);
         if (icon) icon.className = originalClass;
         console.error('Health fetch error:', error);
-        showToast('Failed to get proxy health: ' + error.message, 'danger');
+        if (error && error.name === 'AbortError') {
+            showToast('Proxy health check timed out after 2 minutes.', 'warning');
+        } else {
+            showToast('Failed to get proxy health: ' + error.message, 'danger');
+        }
     });
 }
 
@@ -1788,6 +2110,79 @@ function showProxyHealthModal(host, health) {
         console.error('Bootstrap modal show error:', e);
         showToast('Failed to open health modal, but data was received.', 'warning');
     }
+}
+
+/**
+ * Format a value expressed in MB into a human readable RAM string.
+ */
+function formatRam(mb) {
+    const n = parseFloat(mb);
+    if (isNaN(n) || n <= 0) return 'N/A';
+    if (n >= 1024) return (n / 1024).toFixed(1) + ' GB';
+    return Math.round(n) + ' MB';
+}
+
+/**
+ * Highlight panel for Used RAM and Available RAM.
+ * Uses the numeric values (mem_total_mb / mem_used_mb / mem_available_mb)
+ * parsed server-side from `free -m` so the numbers are precise.
+ */
+function renderMemoryHighlight(details) {
+    if (!details) return '';
+    const total = parseFloat(details.mem_total_mb);
+    const used = parseFloat(details.mem_used_mb);
+    const avail = parseFloat(details.mem_available_mb);
+    if (isNaN(total) || total <= 0) return '';
+
+    const usedVal = isNaN(used) ? 0 : used;
+    const availVal = isNaN(avail) ? 0 : avail;
+    const usedPct = Math.min(100, Math.max(0, Math.round((usedVal / total) * 100)));
+    const availPct = Math.min(100, Math.max(0, Math.round((availVal / total) * 100)));
+
+    let usedBar = 'bg-success', usedText = 'text-success', usedBorder = '#a7f3d0', usedBg = '#ecfdf5';
+    if (usedPct > 92) {
+        usedBar = 'bg-danger'; usedText = 'text-danger'; usedBorder = '#fecaca'; usedBg = '#fef2f2';
+    } else if (usedPct > 75) {
+        usedBar = 'bg-warning'; usedText = 'text-warning'; usedBorder = '#fde68a'; usedBg = '#fffbeb';
+    }
+
+    let availBar = 'bg-primary', availText = 'text-primary', availBorder = '#bfdbfe', availBg = '#eff6ff';
+    if (availPct < 10) {
+        availBar = 'bg-danger'; availText = 'text-danger'; availBorder = '#fecaca'; availBg = '#fef2f2';
+    } else if (availPct < 25) {
+        availBar = 'bg-warning'; availText = 'text-warning'; availBorder = '#fde68a'; availBg = '#fffbeb';
+    }
+
+    return `
+        <div class="row g-2 mb-3">
+            <div class="col-12 col-md-4">
+                <div class="p-3 rounded h-100" style="background:${usedBg};border:1px solid ${usedBorder};">
+                    <div class="text-uppercase fw-bold text-muted" style="font-size:0.7rem;letter-spacing:0.5px;">🔥 Used RAM</div>
+                    <div class="fs-4 fw-bold ${usedText}">${escapeHtml(formatRam(usedVal))}</div>
+                    <div class="progress mt-2" style="height:8px;">
+                        <div class="progress-bar ${usedBar}" role="progressbar" style="width:${usedPct}%;" aria-valuenow="${usedPct}" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                    <div class="small text-muted mt-1">${usedPct}% of ${escapeHtml(formatRam(total))}</div>
+                </div>
+            </div>
+            <div class="col-12 col-md-4">
+                <div class="p-3 rounded h-100" style="background:${availBg};border:1px solid ${availBorder};">
+                    <div class="text-uppercase fw-bold text-muted" style="font-size:0.7rem;letter-spacing:0.5px;">✅ Available RAM</div>
+                    <div class="fs-4 fw-bold ${availText}">${escapeHtml(formatRam(availVal))}</div>
+                    <div class="progress mt-2" style="height:8px;">
+                        <div class="progress-bar ${availBar}" role="progressbar" style="width:${availPct}%;" aria-valuenow="${availPct}" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                    <div class="small text-muted mt-1">${availPct}% of ${escapeHtml(formatRam(total))} free for use</div>
+                </div>
+            </div>
+            <div class="col-12 col-md-4">
+                <div class="p-3 rounded h-100" style="background:#f8fafc;border:1px solid #e2e8f0;">
+                    <div class="text-uppercase fw-bold text-muted" style="font-size:0.7rem;letter-spacing:0.5px;">💾 Total RAM</div>
+                    <div class="fs-4 fw-bold text-dark">${escapeHtml(formatRam(total))}</div>
+                    <div class="small text-muted mt-2">Physical memory reported by <code>free -m</code></div>
+                </div>
+            </div>
+        </div>`;
 }
 
 function buildHealthDetails(health) {
@@ -1960,6 +2355,9 @@ function buildHealthDetails(health) {
             const rows = sec.keys.filter(k => health.details[k] !== undefined);
             if (!rows.length) return;
             detailsHtml += `<div class="mb-3"><h6 class="text-uppercase text-muted fw-bold mb-2" style="letter-spacing:0.5px;font-size:0.75rem;">${sec.title}</h6>`;
+            if (sec.title.indexOf('Memory') !== -1) {
+                detailsHtml += renderMemoryHighlight(health.details);
+            }
             rows.forEach(key => {
                 const val = health.details[key];
                 const label = key.replace(/\./g, ' ').replace(/([A-Z])/g, ' $1').replace(/\b\w/g, c => c.toUpperCase());
@@ -2801,6 +3199,11 @@ sshFormLowercaseFields.forEach(function(id) {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     loadServers();
+
+    // Keep the "Last updated" label fresh without re-fetching the list
+    updateSshLastUpdatedLabel();
+    if (sshLastUpdatedTimer) clearInterval(sshLastUpdatedTimer);
+    sshLastUpdatedTimer = setInterval(updateSshLastUpdatedLabel, 30000);
 
     // Favorite star toggle handler (delegated)
     document.addEventListener('click', function(e) {
