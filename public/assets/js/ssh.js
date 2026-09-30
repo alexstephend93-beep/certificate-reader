@@ -12,6 +12,11 @@ let sshFilterMode = 'all';            // all | favorites | missing-key
 let sshLastLoadedAt = null;           // Date of the last successful /ssh/list load
 let sshLastUpdatedTimer = null;       // interval that refreshes the "last updated" label
 
+// Persisted UI state + last connection-test results (both survive a page refresh)
+const SSH_UI_STATE_KEY = 'sshManager.uiState';
+const SSH_TEST_STATUS_KEY = 'sshManager.testStatus';
+let sshTestStatuses = {};             // { host: { ok: bool, at: iso } }
+
 function loadServers() {
     console.log('Loading SSH servers...');
 
@@ -85,6 +90,36 @@ function updateStats(totalServers, validKeys) {
     const validEl = document.getElementById('validKeys');
     if (totalEl) totalEl.textContent = totalServers;
     if (validEl) validEl.textContent = validKeys;
+
+    // Actionable counts derived from the loaded hosts (drive the clickable cards).
+    setStatValue('statFavorites', allHosts.filter(h => h.is_favorite).length);
+    setStatValue('statMissingKeys', allHosts.filter(h => h.identity_file && !h.key_exists).length);
+    setStatValue('statNeverOpened', allHosts.filter(h => !(h.open_count > 0)).length);
+    setStatValue('statUntested', allHosts.filter(h => !sshTestStatuses[h.host]).length);
+
+    updateStatCardActiveState();
+}
+
+function setStatValue(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
+/**
+ * Highlight the stat card that matches the active quick filter.
+ * Keeps the cards in sync whether the user clicks a chip or a stat card.
+ */
+function updateStatCardActiveState() {
+    const map = {
+        all: 'statCardAll',
+        favorites: 'statCardFavorites',
+        'missing-key': 'statCardMissingKey',
+        'never-opened': 'statCardNeverOpened'
+    };
+    Object.keys(map).forEach(function (mode) {
+        const el = document.getElementById(map[mode]);
+        if (el) el.classList.toggle('active', sshFilterMode === mode);
+    });
 }
 
 function countValidKeys(hosts) {
@@ -104,6 +139,9 @@ function searchServers() {
     const rawSearchTerm = searchInputEl ? searchInputEl.value : '';
     // Automatically convert upper case to lower case and normalize whitespace
     const searchTerm = rawSearchTerm.toLowerCase().trim().replace(/\s+/g, ' ');
+
+    // Remember the query so a page refresh restores the same view.
+    saveSshUiState({ search: rawSearchTerm });
 
     if (!searchTerm) {
         loadedHosts = [...allHosts];
@@ -281,6 +319,50 @@ function finalizeSshRender(isEmptySearch) {
     }
 }
 
+// ===== Persisted UI state (filter / sort / search survive a refresh) =====
+
+function loadSshUiState() {
+    try {
+        return JSON.parse(localStorage.getItem(SSH_UI_STATE_KEY) || '{}') || {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function saveSshUiState(partial) {
+    try {
+        localStorage.setItem(SSH_UI_STATE_KEY, JSON.stringify(Object.assign(loadSshUiState(), partial)));
+    } catch (e) {
+        /* localStorage unavailable — ignore */
+    }
+}
+
+function restoreSshUiState() {
+    const state = loadSshUiState();
+
+    if (typeof state.filter === 'string' && state.filter) {
+        sshFilterMode = state.filter;
+    }
+    document.querySelectorAll('.ssh-chip').forEach(function (chip) {
+        const isActive = chip.getAttribute('data-filter') === sshFilterMode;
+        chip.classList.toggle('active', isActive);
+        chip.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+
+    if (typeof state.sort === 'string' && state.sort) {
+        sshSortMode = state.sort;
+        const sortSelect = document.getElementById('sshSortSelect');
+        if (sortSelect) sortSelect.value = sshSortMode;
+    }
+
+    if (typeof state.search === 'string' && state.search) {
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) searchInput.value = state.search;
+    }
+
+    updateStatCardActiveState();
+}
+
 // Quick filter chips (All / Favorites / Missing key)
 function applySshFilter(filter) {
     sshFilterMode = filter || 'all';
@@ -291,12 +373,16 @@ function applySshFilter(filter) {
         chip.setAttribute('aria-pressed', isActive ? 'true' : 'false');
     });
 
+    saveSshUiState({ filter: sshFilterMode });
+    updateStatCardActiveState();
+
     searchServers();
 }
 
 // Sort dropdown
 function applySshSort(mode) {
     sshSortMode = mode || 'name';
+    saveSshUiState({ sort: sshSortMode });
     searchServers();
 }
 
@@ -679,7 +765,7 @@ function renderServers(hosts) {
                             <i class="bi bi-patch-check-fill icon-ssl" title="Install SSL Certificate (Let's Encrypt / Paid)" onclick='openSslInstallModal("${host.host}", "${host.hostname}", "${host.user}", "${escapeHtml(host.identity_file || '')}", ${port})'></i>
                             ${vscodeDomainsHtml}
                              <i class="bi bi-clipboard2-check icon-copy" title="Copy SSH command" onclick='copySshCommand("${host.host}")'></i>
-                             <i class="bi bi-heart-pulse icon-diagnose" title="Proxy Server Health Checkup" onclick='showProxyHealth("${host.host}", this)'></i>
+                             <i class="bi bi-heart-pulse icon-diagnose" data-host-health="${host.host}" title="Proxy Server Health Checkup" onclick='showProxyHealth("${host.host}", this)'></i>
                             <div class="test-wrapper">
                                 <i class="bi bi-plug-fill icon-test" title="Test server connection" onclick='testSingleConnection(this, ${index}, "${host.hostname}", ${port})'></i>
                                 <span class="testing-spinner"></span>
@@ -694,6 +780,147 @@ function renderServers(hosts) {
     }).join('');
     
     grid.innerHTML = html;
+
+    // Re-apply remembered connection-test results to the freshly rendered cards.
+    applySshTestBadges();
+}
+
+/* ============================================================
+ * CONNECTION TEST STATUS (persisted) + "TEST ALL"
+ * ------------------------------------------------------------
+ * The per-server Test button and the bulk "Test all shown" action
+ * both record their result here, so the card colours and the
+ * "Untested" stat survive a page refresh.
+ * ============================================================ */
+
+function loadSshTestStatuses() {
+    try {
+        sshTestStatuses = JSON.parse(localStorage.getItem(SSH_TEST_STATUS_KEY) || '{}') || {};
+    } catch (e) {
+        sshTestStatuses = {};
+    }
+}
+
+function persistSshTestStatus(host, ok) {
+    if (!host) return;
+    sshTestStatuses[host] = { ok: !!ok, at: new Date().toISOString() };
+    try {
+        localStorage.setItem(SSH_TEST_STATUS_KEY, JSON.stringify(sshTestStatuses));
+    } catch (e) {
+        /* ignore */
+    }
+}
+
+function cssEscapeAttr(value) {
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+    return String(value).replace(/["\\]/g, '\\$&');
+}
+
+// Paint a persisted test result onto one card (border + plug icon colour).
+function setCardTestStatus(hostName, ok) {
+    if (!hostName) return;
+    const card = document.querySelector('.server-card[data-server-host="' + cssEscapeAttr(hostName) + '"]');
+    if (!card) return;
+
+    card.classList.toggle('connection-success', !!ok);
+    card.classList.toggle('connection-failed', !ok);
+
+    const wrapper = card.closest('.server-card-wrapper');
+    if (wrapper) {
+        wrapper.classList.toggle('connection-success', !!ok);
+        wrapper.classList.toggle('connection-failed', !ok);
+    }
+
+    const testWrapper = card.querySelector('.test-wrapper');
+    if (testWrapper) {
+        testWrapper.classList.toggle('test-success', !!ok);
+        testWrapper.classList.toggle('test-failed', !ok);
+    }
+
+    const icon = card.querySelector('.icon-test');
+    if (icon) {
+        icon.classList.toggle('connection-tested-success', !!ok);
+        icon.classList.toggle('connection-tested-failed', !ok);
+        icon.title = ok ? 'Last test: connection successful' : 'Last test: connection failed';
+    }
+}
+
+// Re-apply every remembered result after the grid is re-rendered.
+function applySshTestBadges() {
+    loadedHosts.forEach(function (h) {
+        const status = sshTestStatuses[h.host];
+        if (status) setCardTestStatus(h.host, status.ok);
+    });
+}
+
+/**
+ * Bulk connectivity test for the servers currently shown (respects search + filter).
+ * Sends small batches to /ssh/test-many so a single HTTP request never times out.
+ */
+async function testAllConnections() {
+    const targets = loadedHosts.filter(h => h.hostname && h.identity_file);
+    if (!targets.length) {
+        showToast('No servers to test in the current view.', 'warning');
+        return;
+    }
+
+    const btn = document.getElementById('sshTestAllBtn');
+    const originalHtml = btn ? btn.innerHTML : '';
+    if (btn) btn.disabled = true;
+
+    const CHUNK = 10;
+    let passed = 0;
+    let failed = 0;
+
+    showToast(`Testing ${targets.length} server(s)…`, 'info');
+
+    for (let i = 0; i < targets.length; i += CHUNK) {
+        const chunk = targets.slice(i, i + CHUNK);
+        if (btn) {
+            btn.innerHTML = `<i class="bi bi-arrow-repeat ssh-spin"></i> ${Math.min(i + chunk.length, targets.length)}/${targets.length}`;
+        }
+
+        let results = [];
+        try {
+            const response = await fetch('/ssh/test-many', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken
+                },
+                body: JSON.stringify({
+                    hosts: chunk.map(h => ({
+                        host: h.host,
+                        hostname: h.hostname,
+                        user: h.user,
+                        identity_file: h.identity_file,
+                        port: h.port || 22
+                    }))
+                })
+            });
+            const data = await response.json();
+            results = (data && data.results) || [];
+        } catch (err) {
+            console.error('Bulk test batch failed:', err);
+        }
+
+        chunk.forEach(function (h) {
+            const match = results.find(r => r.host === h.host);
+            const ok = !!(match && match.success);
+            persistSshTestStatus(h.host, ok);
+            setCardTestStatus(h.host, ok);
+            if (ok) passed++; else failed++;
+        });
+    }
+
+    if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    }
+
+    updateStats(allHosts.length, countValidKeys(allHosts));
+    showToast(`Test complete — ✅ ${passed} reachable, ❌ ${failed} failed`, failed ? 'warning' : 'success');
 }
 
 // Helper functions
@@ -2560,6 +2787,7 @@ function testSingleConnection(element, index, hostname, port) {
             // Change icon color to green (permanent until next test)
             icon.style.color = '#10b981';
             icon.classList.add('connection-tested-success');
+            persistSshTestStatus(hostData.host, true);
             
             // Add tooltip to icon with auto-hide
             autoHideTooltip(icon, '✅ Connection successful', 'top', 5000);
@@ -2593,6 +2821,7 @@ function testSingleConnection(element, index, hostname, port) {
             // Change icon color to red (permanent until next test)
             icon.style.color = '#ef4444';
             icon.classList.add('connection-tested-failed');
+            persistSshTestStatus(hostData.host, false);
             
             // Add tooltip to icon with auto-hide
             autoHideTooltip(icon, `❌ ${errorMessage}`, 'top', 5000);
@@ -2605,6 +2834,7 @@ function testSingleConnection(element, index, hostname, port) {
 
         const errorMessage = error.message || 'Network error';
         showToast(`❌ ${hostData.host}: Connection test failed`, 'danger');
+        persistSshTestStatus(hostData.host, false);
         // Add failed classes
         if (serverCard) {
             serverCard.classList.add('connection-failed');
@@ -3198,6 +3428,9 @@ sshFormLowercaseFields.forEach(function(id) {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
+    loadSshTestStatuses();
+    restoreSshUiState();
+
     loadServers();
 
     // Keep the "Last updated" label fresh without re-fetching the list

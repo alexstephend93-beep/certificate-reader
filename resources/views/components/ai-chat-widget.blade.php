@@ -187,6 +187,9 @@
     /* Chat Messages Area */
     .chat-messages {
         flex-grow: 1;
+        /* min-height:0 is required so this flex child can shrink and scroll
+           instead of overflowing the window and clipping the messages. */
+        min-height: 0;
         overflow-y: auto;
         padding: 20px;
         background: #f8fafc;
@@ -966,21 +969,13 @@ class AIChatWidget {
          const message = this.chatInput.value.trim();
          if (!message || this.isThinking) return;
          
-         // Validate: Detect image/file references that text-only models cannot process
+         // The widget is text-only. Only block pasted binary/embedded data, which
+         // genuinely cannot be processed; prose that merely mentions a filename
+         // (e.g. "how do I unzip a .zip file?") is a legitimate question.
          const forbiddenPatterns = [
-             // Image file extensions (case-insensitive, word boundary after)
-             /\.(png|jpg|jpeg|gif|bmp|webp|svg|ico|tiff?|heic|avif)(\b|$)/i,
-             // Other common file types
-             /\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar\.gz|gz|bz2|exe|dmg|iso|apk|epub|mobi|mp3|mp4|avi|mov|wmv|flv|mkv|webm)(\b|$)/i,
-             // Phrases indicating attachment
-             /(attach|upload|send|include|share|sending|attached).*(file|image|photo|picture|screenshot|scan|document)/i,
-             /(file|image|photo|picture|screenshot|scan|document).*(attach|upload|send|include|share)/i,
-             /here.*(is|comes|attached|uploaded|included).*(image|file|photo|picture)/i,
-             /see.*(attachment|upload|image|file|photo)/i,
-             /data:image/i, // base64 image data URIs
-             /base64.*(image|file)/i,
-             /\[image\]/i, // markdown-style image
-             /!\[.*?\]\(.*?\)/i // markdown image syntax
+             /data:image/i,          // base64 image data URIs
+             /data:application\//i,  // base64 file data URIs
+             /;\s*base64,/i          // raw base64 payloads
          ];
          
           for (const pattern of forbiddenPatterns) {
@@ -1042,11 +1037,11 @@ class AIChatWidget {
          }
      }
     
-    addMessage(text, sender, isError = false) {
+    addMessage(text, sender, isError = false, isHtml = false) {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${sender}${isError ? ' error' : ''}`;
         
-        const formattedText = this.formatMessage(text);
+        const formattedText = isHtml ? text : this.formatMessage(text);
         
         messageDiv.innerHTML = `
             <div class="message-bubble">
@@ -1082,6 +1077,12 @@ class AIChatWidget {
     }
     
     formatMessage(text) {
+        // Escape HTML first so model output can never inject markup into the page.
+        text = String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
         // Format code blocks
         text = text.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
         
@@ -1151,7 +1152,8 @@ class AIChatWidget {
                 const messages = JSON.parse(saved);
                 this.chatMessages.innerHTML = '';
                 messages.forEach(msg => {
-                    this.addMessage(msg.text, msg.sender);
+                    // The stored text is already formatted HTML - don't re-escape it.
+                    this.addMessage(msg.text, msg.sender, false, true);
                 });
             } catch (e) {
                 console.error('Failed to load conversation', e);

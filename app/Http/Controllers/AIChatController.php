@@ -9,6 +9,18 @@ use Illuminate\Support\Facades\Log;
 
 class AIChatController extends Controller
 {
+    /** Provider that produced the last successful answer (useful for debugging). */
+    private ?string $lastProvider = null;
+
+    private const MAX_TOKENS = 1200;
+
+    private const SYSTEM_PROMPT = 'You are the AI assistant embedded in "Certificate Tools", a '
+        . 'security-focused toolkit. Help the user with SSL/TLS certificates, certificate chains, '
+        . 'CSRs, private/public keys, JWT, hashing, HMAC, Base64, SSH, API testing, and general '
+        . 'Linux/DevOps questions. Answer the actual question first, keep answers concise, and put '
+        . 'shell/PHP commands in fenced code blocks. If a question is unrelated to security, still '
+        . 'answer it helpfully and accurately.';
+
     public function chat(Request $request)
     {
         $request->validate([
@@ -25,7 +37,7 @@ class AIChatController extends Controller
         // Add user message to history
         $history[] = ['role' => 'user', 'content' => $message];
         
-        // Get REAL AI response from free API
+        // Ask the configured AI providers (see providerChain())
         $response = $this->getRealAIResponse($history);
         
         // If real AI fails, use intelligent fallback
@@ -33,8 +45,9 @@ class AIChatController extends Controller
             $response = $this->getIntelligentFallbackResponse($message);
         }
         
-        // Detect if the response is actually an API error about image input
-        if ($response && $this->isApiImageInputError($response)) {
+        // Only surface the "images are unsupported" error when the user's own message
+        // actually referenced an attachment; otherwise a genuine answer would be lost.
+        if ($response && $this->isApiImageInputError($response) && $this->messageReferencesFile($message)) {
             return response()->json([
                 'success' => false,
                 'error_message' => $response,
@@ -54,6 +67,7 @@ class AIChatController extends Controller
         return response()->json([
             'success' => true,
             'response' => $response,
+            'provider' => $this->lastProvider,
             'conversation_id' => $conversationId,
             'timestamp' => now()->toIso8601String()
         ]);
@@ -61,144 +75,425 @@ class AIChatController extends Controller
     
     private function getRealAIResponse($history)
     {
-        $lastUserMessage = '';
-        if (!empty($history)) {
-            $lastUserMessage = is_array(end($history)) ? (end($history)['content'] ?? '') : '';
-        }
+        // Provider chain: configured/keyed providers first (fast + reliable),
+        // keyless providers last because they are rate limited by upstream.
+        $budgetSeconds = (int) config('services.ai.budget', 90);
+        $deadline = microtime(true) + $budgetSeconds;
 
-        // FREE API #1: Pollinations.ai (No API key, unlimited, works great!)
-        try {
-            $response = Http::timeout(30)
-                ->post('https://text.pollinations.ai/openai/v1/chat/completions', [
-                    'model' => 'openai',
-                    'messages' => $history,
-                    'temperature' => 0.7,
-                    'max_tokens' => 1000,
+        foreach ($this->providerChain($history, $deadline) as $providerName => $call) {
+            if (microtime(true) >= $deadline) {
+                Log::warning('AI provider budget exhausted, skipping remaining providers', [
+                    'provider' => $providerName,
                 ]);
-            
-            if ($response->successful()) {
-                $data = $response->json();
-                $content = $data['choices'][0]['message']['content'] ?? null;
-                if ($content && strlen($content) > 5) {
-                    Log::info('AI response from Pollinations.ai');
+                break;
+            }
+
+            $startedAt = microtime(true);
+
+            try {
+                $content = $call($deadline);
+
+                if (is_string($content) && trim($content) !== '') {
+                    $this->lastProvider = $providerName;
+                    Log::info('AI response served', [
+                        'provider' => $providerName,
+                        'latency_ms' => (int) ((microtime(true) - $startedAt) * 1000),
+                    ]);
+
                     return $content;
                 }
+            } catch (\Throwable $e) {
+                Log::warning("AI provider [{$providerName}] failed: " . $e->getMessage());
             }
-
-            if ($response->failed()) {
-                $body = $response->body();
-                if ($this->isImageInputError($body, $lastUserMessage)) {
-                    return null;
-                }
-            }
-        } catch (\Exception $e) {
-            $msg = $e->getMessage();
-            if ($this->containsImageRef($msg, $lastUserMessage)) {
-                return null;
-            }
-            Log::warning('Pollinations.ai failed: ' . $e->getMessage());
         }
-        
-        // FREE API #2: OpenRouter (No API key, multiple models)
-        try {
-            $response = Http::timeout(30)
-                ->withHeaders([
-                    'Content-Type' => 'application/json',
-                    'HTTP-Referer' => url('/'),
-                    'X-Title' => 'Certificate Tools'
-                ])
-                ->post('https://openrouter.ai/api/v1/chat/completions', [
-                    'model' => 'microsoft/phi-3-mini-128k-instruct:free',
-                    'messages' => $history,
-                    'temperature' => 0.7,
-                    'max_tokens' => 1000,
-                ]);
-            
-            if ($response->successful()) {
-                $data = $response->json();
-                $content = $data['choices'][0]['message']['content'] ?? null;
-                if ($content && strlen($content) > 5) {
-                    Log::info('AI response from OpenRouter');
-                    return $content;
-                }
-            }
 
-            if ($response->failed()) {
-                $body = $response->body();
-                if ($this->isImageInputError($body, $lastUserMessage)) {
-                    return null;
-                }
-            }
-        } catch (\Exception $e) {
-            $msg = $e->getMessage();
-            if ($this->containsImageRef($msg, $lastUserMessage)) {
-                return null;
-            }
-            Log::warning('OpenRouter failed: ' . $e->getMessage());
-        }
-        
-        // FREE API #3: Llama API (No API key)
-        try {
-            $response = Http::timeout(30)
-                ->post('https://api.llama-api.com/chat/completions', [
-                    'model' => 'llama3-8b',
-                    'messages' => $history,
-                    'temperature' => 0.7,
-                    'max_tokens' => 1000,
-                ]);
-            
-            if ($response->successful()) {
-                $data = $response->json();
-                $content = $data['choices'][0]['message']['content'] ?? null;
-                if ($content && strlen($content) > 5) {
-                    Log::info('AI response from Llama API');
-                    return $content;
-                }
-            }
-
-            if ($response->failed()) {
-                $body = $response->body();
-                if ($this->isImageInputError($body, $lastUserMessage)) {
-                    return null;
-                }
-            }
-        } catch (\Exception $e) {
-            $msg = $e->getMessage();
-            if ($this->containsImageRef($msg, $lastUserMessage)) {
-                return null;
-            }
-            Log::warning('Llama API failed: ' . $e->getMessage());
-        }
-        
         return null;
     }
 
-    private function isImageInputError($body, $userMessage)
+    /**
+     * Ordered provider chain: name => callable returning the answer text (or null).
+     * Keyed providers come first because the keyless ones are rate limited upstream.
+     *
+     * @return array<string, callable(): ?string>
+     */
+    private function providerChain(array $history, ?float $deadline = null): array
     {
-        if ($this->containsImageRef($body, $userMessage)) {
-            return true;
+        $chain = [];
+
+        if (config('services.gemini.key')) {
+            $chain['gemini'] = fn () => $this->callGemini($history, $deadline);
         }
-        if (stripos($body, 'image input') !== false) return true;
-        if (stripos($body, 'image_url') !== false) return true;
-        if (stripos($body, 'input_image') !== false) return true;
-        if (stripos($body, 'content_type') !== false && stripos($body, 'image') !== false) return true;
+
+        if (config('services.github.token')) {
+            $chain['github-models'] = fn () => $this->callGithubModels($history, $deadline);
+        }
+
+        if (config('services.ai.api_key')) {
+            $chain['openrouter'] = fn () => $this->callOpenRouter($history, $deadline);
+        }
+
+        // Keyless last resort.
+        $chain['pollinations'] = fn () => $this->callPollinations($history, $deadline);
+
+        return $chain;
+    }
+
+    /**
+     * Per-request timeout, clamped to whatever is left of the total budget so a
+     * single slow provider cannot consume the whole allowance.
+     */
+    private function timeout(?float $deadline = null): int
+    {
+        $configured = max(5, (int) config('services.ai.timeout', 45));
+
+        if ($deadline === null) {
+            return $configured;
+        }
+
+        return (int) max(5, min($configured, (int) ceil($deadline - microtime(true))));
+    }
+
+    /**
+     * Google Gemini "generateContent" API. Tries the configured model, then any
+     * fallbacks (Google retires model names regularly).
+     */
+    private function callGemini(array $history, ?float $deadline = null): ?string
+    {
+        $key = (string) config('services.gemini.key');
+
+        $models = array_values(array_unique(array_filter(array_merge(
+            [(string) config('services.gemini.model')],
+            (array) config('services.gemini.fallback_models', [])
+        ))));
+
+        [$systemInstruction, $contents] = $this->toGeminiPayload($history);
+
+        $payload = [
+            'contents' => $contents,
+            'generationConfig' => [
+                'temperature' => 0.7,
+                'maxOutputTokens' => self::MAX_TOKENS,
+                // Disable "thinking" tokens so answers stay fast and complete.
+                'thinkingConfig' => ['thinkingBudget' => 0],
+            ],
+        ];
+
+        if ($systemInstruction !== '') {
+            $payload['systemInstruction'] = ['parts' => [['text' => $systemInstruction]]];
+        }
+
+        $baseUrl = rtrim((string) config('services.gemini.base_url'), '/');
+        $withThinkingConfig = true;
+
+        foreach ($models as $model) {
+            if ($deadline !== null && microtime(true) >= $deadline) {
+                Log::warning('Gemini budget exhausted before trying model', ['model' => $model]);
+                break;
+            }
+
+            $url = $baseUrl . '/v1beta/models/' . $model . ':generateContent';
+
+            try {
+                $response = $this->postGemini($url, $payload, $withThinkingConfig, $key, $deadline);
+
+                // Some models (e.g. the *-lite ones) reject thinkingConfig outright.
+                if ($response->status() === 400
+                    && $withThinkingConfig
+                    && str_contains(strtolower($response->body()), 'thinking')
+                ) {
+                    Log::info('Gemini rejected thinkingConfig, retrying without it', ['model' => $model]);
+                    $withThinkingConfig = false;
+                    $response = $this->postGemini($url, $payload, false, $key, $deadline);
+                }
+
+                if ($response->successful()) {
+                    $text = $this->extractGeminiText($response->json());
+
+                    if ($text !== null) {
+                        return $text;
+                    }
+
+                    Log::warning('Gemini returned an empty candidate', ['model' => $model]);
+                    continue;
+                }
+
+                Log::warning('Gemini request failed', [
+                    'model' => $model,
+                    'status' => $response->status(),
+                    'body' => mb_substr($response->body(), 0, 300),
+                ]);
+
+                // Only bad credentials are worth aborting for; other errors (503 high
+                // demand, 429 quota, 404 retired model) may be model specific, so keep
+                // trying the remaining fallback models.
+                if (in_array($response->status(), [401, 403], true)) {
+                    break;
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Gemini request threw', ['model' => $model, 'error' => $e->getMessage()]);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Send a Gemini request, optionally including the thinkingConfig extension.
+     */
+    private function postGemini(string $url, array $payload, bool $withThinkingConfig, string $key, ?float $deadline)
+    {
+        if (!$withThinkingConfig) {
+            unset($payload['generationConfig']['thinkingConfig']);
+        }
+
+        return Http::timeout($this->timeout($deadline))
+            ->acceptJson()
+            ->withHeaders(['x-goog-api-key' => $key])
+            ->post($url, $payload);
+    }
+
+    /**
+     * GitHub Models - OpenAI compatible endpoint authenticated with GITHUB_TOKEN.
+     */
+    private function callGithubModels(array $history, ?float $deadline = null): ?string
+    {
+        $response = Http::timeout($this->timeout($deadline))
+            ->acceptJson()
+            ->withToken((string) config('services.github.token'))
+            ->post((string) config('services.github.base_url'), [
+                'model' => (string) config('services.github.model'),
+                'messages' => $this->toOpenAiMessages($history),
+                'temperature' => 0.7,
+                'max_tokens' => self::MAX_TOKENS,
+            ]);
+
+        return $this->extractOpenAiContent($response, 'GitHub Models');
+    }
+    
+    /**
+     * OpenRouter - only used when AI_API_KEY is configured.
+     */
+    private function callOpenRouter(array $history, ?float $deadline = null): ?string
+    {
+        $response = Http::timeout($this->timeout($deadline))
+            ->acceptJson()
+            ->withHeaders([
+                'Authorization' => 'Bearer ' . config('services.ai.api_key'),
+                'HTTP-Referer' => url('/'),
+                'X-Title' => config('app.name', 'Certificate Tools'),
+            ])
+            ->post((string) config('services.openrouter.base_url'), [
+                'model' => (string) config('services.openrouter.model'),
+                'messages' => $this->toOpenAiMessages($history),
+                'temperature' => 0.7,
+                'max_tokens' => self::MAX_TOKENS,
+            ]);
+
+        return $this->extractOpenAiContent($response, 'OpenRouter');
+    }
+
+    /**
+     * Pollinations.ai - keyless and rate limited (402/429 when throttled),
+     * so it retries once after a short back-off.
+     */
+    private function callPollinations(array $history, ?float $deadline = null): ?string
+    {
+        $url = (string) config('services.pollinations.base_url');
+
+        $payload = [
+            'model' => (string) config('services.pollinations.model'),
+            'messages' => $this->toOpenAiMessages($history),
+            'temperature' => 0.7,
+            'max_tokens' => self::MAX_TOKENS,
+        ];
+
+        foreach ([0, 1] as $attempt) {
+            $response = Http::timeout(min(20, $this->timeout($deadline)))
+                ->acceptJson()
+                ->post($url, $payload);
+
+            if ($response->successful()) {
+                return $this->extractOpenAiContent($response, 'Pollinations');
+            }
+
+            Log::warning('Pollinations request failed', [
+                'status' => $response->status(),
+                'attempt' => $attempt + 1,
+                'body' => mb_substr($response->body(), 0, 200),
+            ]);
+
+            if (!in_array($response->status(), [402, 429, 503], true)) {
+                return null;
+            }
+
+            // Throttled: back off briefly before the single retry, if time allows.
+            if ($attempt === 0 && ($deadline === null || microtime(true) + 1.5 < $deadline)) {
+                usleep(1500000);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Convert the stored OpenAI-style history into Gemini's contents/systemInstruction.
+     *
+     * @return array{0: string, 1: array<int, array<string, mixed>>}
+     */
+    private function toGeminiPayload(array $history): array
+    {
+        $system = '';
+        $contents = [];
+
+        foreach (array_slice($history, -20) as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $role = $entry['role'] ?? 'user';
+            $text = trim((string) ($entry['content'] ?? ''));
+
+            if ($text === '') {
+                continue;
+            }
+
+            if ($role === 'system') {
+                $system = $system === '' ? $text : $system . "\n\n" . $text;
+                continue;
+            }
+
+            $geminiRole = $role === 'assistant' ? 'model' : 'user';
+            $lastIndex = count($contents) - 1;
+
+            // Gemini rejects two turns with the same role in a row.
+            if ($lastIndex >= 0 && $contents[$lastIndex]['role'] === $geminiRole) {
+                $contents[$lastIndex]['parts'][] = ['text' => $text];
+            } else {
+                $contents[] = ['role' => $geminiRole, 'parts' => [['text' => $text]]];
+            }
+        }
+
+        // Gemini requires a non-empty conversation that ends on a user turn.
+        if ($contents === [] || end($contents)['role'] !== 'user') {
+            $contents[] = ['role' => 'user', 'parts' => [['text' => 'Hello']]];
+        }
+
+        return [$system, $contents];
+    }
+
+    /**
+     * @return array<int, array{role: string, content: string}>
+     */
+    private function toOpenAiMessages(array $history): array
+    {
+        $messages = [['role' => 'system', 'content' => self::SYSTEM_PROMPT]];
+
+        foreach (array_slice($history, -20) as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $role = $entry['role'] ?? 'user';
+            $content = trim((string) ($entry['content'] ?? ''));
+
+            if ($content === '' || !in_array($role, ['user', 'assistant', 'system'], true)) {
+                continue;
+            }
+
+            $messages[] = ['role' => $role, 'content' => $content];
+        }
+
+        return $messages;
+    }
+
+    private function extractGeminiText(?array $data): ?string
+    {
+        $parts = $data['candidates'][0]['content']['parts'] ?? [];
+        $text = '';
+
+        foreach ($parts as $part) {
+            // Skip internal "thinking" parts returned by Gemini 3.x models.
+            if (!empty($part['thought'])) {
+                continue;
+            }
+
+            $text .= $part['text'] ?? '';
+        }
+
+        $text = trim($text);
+
+        return $text === '' ? null : $text;
+    }
+
+    private function extractOpenAiContent($response, string $provider): ?string
+    {
+        if (!$response->successful()) {
+            Log::warning("{$provider} request failed", [
+                'status' => $response->status(),
+                'body' => mb_substr($response->body(), 0, 300),
+            ]);
+
+            return null;
+        }
+
+        $data = $response->json();
+        $content = $data['choices'][0]['message']['content'] ?? null;
+
+        // Some providers return the content as an array of parts.
+        if (is_array($content)) {
+            $content = implode('', array_map(
+                fn ($part) => is_array($part) ? ($part['text'] ?? '') : (string) $part,
+                $content
+            ));
+        }
+
+        $content = trim((string) $content);
+
+        return $content === '' ? null : $content;
+    }
+
+    /**
+     * Err on the side of caution: only clearly image-related upstream errors are
+     * treated as "images unsupported". (The old check also matched the words
+     * "this model"/"unsupported", which could swallow perfectly valid answers.)
+     */
+    private function isApiImageInputError(?string $text): bool
+    {
+        if (!$text) {
+            return false;
+        }
+
+        $lower = strtolower($text);
+
+        foreach ([
+            'image input',
+            'image_url',
+            'input_image',
+            'image content',
+            'invalid image',
+            'cannot read image',
+            'does not support image',
+            'no image support',
+        ] as $needle) {
+            if (str_contains($lower, $needle)) {
+                return true;
+            }
+        }
+
         return false;
     }
 
-    private function containsImageRef($text, $userMessage)
+    /**
+     * Does the user's own message reference a file/image attachment?
+     */
+    private function messageReferencesFile(string $message): bool
     {
-        $text = strtolower($text);
-        $message = strtolower($userMessage ?? '');
-        if (preg_match('/\.(png|jpg|jpeg|gif|bmp|webp|svg|ico|tiff|heic|avif)(\b|$)/i', $message)) {
-            return true;
-        }
-        if (preg_match('/image\.png/i', $text)) return true;
-        if (preg_match('/attach.*image/i', $message)) return true;
-        if (preg_match('/upload.*image/i', $message)) return true;
-        if (preg_match('/send.*image/i', $message)) return true;
-        return false;
+        return (bool) preg_match(
+            '/\.(png|jpe?g|gif|bmp|webp|svg|ico|tiff?|heic|avif|pdf|docx?|xlsx?|csv|zip|txt)\b|data:image|base64/i',
+            $message
+        );
     }
-    
+
     private function getIntelligentFallbackResponse($message)
     {
         $messageLower = strtolower($message);
@@ -227,8 +522,20 @@ class AIChatController extends Controller
             return "🔑 **JWT (JSON Web Token)**\n\nA JWT consists of 3 parts: Header.Payload.Signature\n\n**To generate a JWT:**\n```php\nuse Firebase\\JWT\\JWT;\n\n$payload = ['user_id' => 123, 'exp' => time() + 3600];\n$token = JWT::encode($payload, 'your-secret-key', 'HS256');\n```\n\n**To decode a JWT:**\n```php\n$decoded = JWT::decode($token, 'your-secret-key', ['HS256']);\n```\n\nUse our JWT Analyzer tool to decode and verify tokens!";
         }
         
-        // Default response
-        return "I'm your AI assistant for security tools! 🔐\n\nI can help you with:\n• **SSL/TLS Certificates** - Generate, install, validate\n• **JWT Tokens** - Generate, decode, verify\n• **API Testing** - Debug HTTP requests\n• **Encryption** - Hashing and encryption methods\n\nTry asking:\n• 'How to generate SSL certificate on Ubuntu?'\n• 'How to validate a certificate?'\n• 'What is JWT?'";
+        // Default response: be honest that no live model answered, instead of
+        // pretending the (possibly unrelated) question was handled.
+        return "⚠️ I couldn't reach any live AI model just now, so this is an offline reply.\n\n"
+            . "While online I can answer anything; offline I only know these topics:\n"
+            . "• 🔐 **SSL/TLS Certificates** - generate, install, validate\n"
+            . "• 🔗 **Certificate chains** - inspect and verify\n"
+            . "• 🔑 **JWT tokens** - generate, decode, verify\n"
+            . "• 🌐 **API testing** - debug HTTP requests\n"
+            . "• 🔒 **Hashing & encryption** - SHA-256, HMAC, AES, Base64\n\n"
+            . "Please try again in a moment, or ask one of these, e.g.:\n"
+            . "• 'How to generate SSL certificate on Ubuntu?'\n"
+            . "• 'How to validate a certificate?'\n"
+            . "• 'What is JWT?'\n\n"
+            . "_(Admins: check the AI provider keys via `/test-ai` and `storage/logs/laravel.log`.)_";
     }
     
     public function getConversations(Request $request)
@@ -301,13 +608,15 @@ class AIChatController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Real AI is working!',
+                'provider' => $this->lastProvider,
                 'response' => $response
             ]);
         }
         
         return response()->json([
             'success' => false,
-            'message' => 'AI service unavailable, using fallback responses'
+            'message' => 'No AI provider responded. Check GEMINI_API_KEY / GITHUB_TOKEN and storage/logs/laravel.log',
+            'configured_providers' => array_keys($this->providerChain([])),
         ]);
     }
     
@@ -325,17 +634,5 @@ class AIChatController extends Controller
             $conversations[] = $conversationId;
             Cache::put('ai_conversations_' . session()->getId(), $conversations, now()->addDays(7));
         }
-    }
-
-    private function isApiImageInputError(?string $text): bool
-    {
-        if (!$text) return false;
-        $lower = strtolower($text);
-        if (str_contains($lower, 'image input')) return true;
-        if (str_contains($lower, 'image_url')) return true;
-        if (str_contains($lower, 'input_image')) return true;
-        if (str_contains($lower, 'this model')) return true;
-        if (str_contains($lower, 'unsupported')) return true;
-        return false;
     }
 }

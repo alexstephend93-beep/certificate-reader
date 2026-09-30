@@ -1092,22 +1092,34 @@ class SshController extends Controller
                 ]);
             }
 
-            // Use shell-based SSH test
-            $sshCommand = sprintf(
-                'ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p %d %s@%s %s',
-                escapeshellarg($identityFile),
-                $port,
-                escapeshellarg($request->username),
-                escapeshellarg($request->hostname),
-                escapeshellarg('echo "SSH connection successful"')
-            );
+            // Use a non-interactive shell SSH test with a hard timeout, so a bad
+            // key or an unreachable host can never hang the request.
+            $sshCommand = 'timeout 20 ssh'
+                . ' -o BatchMode=yes'
+                . ' -o ConnectTimeout=10'
+                . ' -o ConnectionAttempts=1'
+                . ' -o NumberOfPasswordPrompts=0'
+                . ' -o PreferredAuthentications=publickey'
+                . ' -o PasswordAuthentication=no'
+                . ' -o KbdInteractiveAuthentication=no'
+                . ' -o StrictHostKeyChecking=no'
+                . ' -o UserKnownHostsFile=/dev/null'
+                . ' -i ' . escapeshellarg($identityFile)
+                . ' -p ' . (int) $port
+                . ' ' . escapeshellarg($request->username . '@' . $request->hostname)
+                . ' exit 2>&1 < /dev/null';
 
-            exec($sshCommand . ' 2>&1', $output, $returnCode);
+            $output = [];
+            $returnCode = 0;
+            exec($sshCommand, $output, $returnCode);
 
             if ($returnCode !== 0) {
+                $message = $returnCode === 124
+                    ? 'SSH connection timed out after 20s'
+                    : 'SSH connection failed: ' . implode(' ', array_slice($output, -3));
                 return response()->json([
                     'success' => false,
-                    'message' => 'SSH connection failed: ' . implode(' ', $output)
+                    'message' => $message
                 ]);
             }
 
@@ -1122,6 +1134,105 @@ class SshController extends Controller
                 'success' => false,
                 'message' => 'Connection error: ' . $e->getMessage()
             ]);
+        }
+    }
+
+    /**
+     * Bulk connectivity test for several servers in a single request.
+     * The UI sends small batches (see testAllConnections in ssh.js) so a
+     * request never runs long enough to hit the PHP/web-server timeout.
+     */
+    public function testManyConnections(Request $request)
+    {
+        $request->validate([
+            'hosts' => 'required|array|min:1|max:25',
+            'hosts.*.host' => 'required|string',
+            'hosts.*.hostname' => 'required|string',
+            'hosts.*.user' => 'nullable|string',
+            'hosts.*.identity_file' => 'nullable|string',
+            'hosts.*.port' => 'nullable|integer|min:1|max:65535',
+        ]);
+
+        $results = [];
+
+        foreach ($request->input('hosts') as $entry) {
+            $results[] = $this->testOneSshConnection([
+                'host' => (string) ($entry['host'] ?? ''),
+                'hostname' => (string) ($entry['hostname'] ?? ''),
+                'user' => (string) ($entry['user'] ?? 'ubuntu'),
+                'identity_file' => (string) ($entry['identity_file'] ?? ''),
+                'port' => (int) ($entry['port'] ?? 22),
+            ]);
+        }
+
+        $passed = count(array_filter($results, function ($result) {
+            return !empty($result['success']);
+        }));
+
+        return response()->json([
+            'success' => true,
+            'results' => $results,
+            'passed' => $passed,
+            'failed' => count($results) - $passed,
+        ]);
+    }
+
+    /**
+     * Test one server with a non-interactive SSH command and a hard timeout.
+     * Returns ['host' => alias, 'success' => bool, 'message' => string].
+     */
+    private function testOneSshConnection(array $config): array
+    {
+        $host = (string) ($config['host'] ?? '');
+        $hostname = (string) ($config['hostname'] ?? '');
+
+        try {
+            if ($hostname === '') {
+                return ['host' => $host, 'success' => false, 'message' => 'Missing hostname'];
+            }
+
+            $identityFile = $this->expandPath((string) ($config['identity_file'] ?? ''));
+            if ($identityFile === '' || !file_exists($identityFile) || !is_readable($identityFile)) {
+                return ['host' => $host, 'success' => false, 'message' => 'PEM key file not found or not readable'];
+            }
+
+            $command = 'timeout 20 ssh'
+                . ' -o BatchMode=yes'
+                . ' -o ConnectTimeout=10'
+                . ' -o ConnectionAttempts=1'
+                . ' -o NumberOfPasswordPrompts=0'
+                . ' -o PreferredAuthentications=publickey'
+                . ' -o PasswordAuthentication=no'
+                . ' -o KbdInteractiveAuthentication=no'
+                . ' -o StrictHostKeyChecking=no'
+                . ' -o UserKnownHostsFile=/dev/null'
+                . ' -o IdentitiesOnly=yes'
+                . ' -i ' . escapeshellarg($identityFile)
+                . ' ' . escapeshellarg(($config['user'] ?? 'ubuntu') . '@' . $hostname)
+                . ' -p ' . (int) ($config['port'] ?? 22)
+                . ' exit 2>&1 < /dev/null';
+
+            $output = [];
+            $returnCode = 0;
+            exec($command, $output, $returnCode);
+
+            if ($returnCode === 0) {
+                return ['host' => $host, 'success' => true, 'message' => 'Connection successful'];
+            }
+
+            if ($returnCode === 124) {
+                return ['host' => $host, 'success' => false, 'message' => 'Timed out after 20s'];
+            }
+
+            $message = trim(implode(' ', array_slice(array_filter($output), -3)));
+
+            return [
+                'host' => $host,
+                'success' => false,
+                'message' => $message !== '' ? $message : 'Connection failed',
+            ];
+        } catch (\Throwable $e) {
+            return ['host' => $host, 'success' => false, 'message' => $e->getMessage()];
         }
     }
 

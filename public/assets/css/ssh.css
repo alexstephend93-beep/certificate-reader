@@ -702,6 +702,30 @@ body::after {
     margin-top: 5px;
 }
 
+/* Clickable stat cards act as quick filters / actions */
+.stat-card-clickable {
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    width: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+}
+
+.stat-card-clickable.active {
+    border-color: var(--color-primary);
+    box-shadow: 0 14px 30px -16px rgba(102, 126, 234, 0.65);
+}
+
+.stat-card-clickable.active .stat-number-ssh {
+    color: var(--color-primary);
+}
+
+.stat-card-clickable:focus-visible {
+    outline: 3px solid rgba(102, 126, 234, 0.35);
+    outline-offset: 2px;
+}
+
 /* ========== BUTTONS ========== */
 .btn-primary-custom {
     background: var(--gradient-primary);

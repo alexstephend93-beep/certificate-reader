@@ -172,6 +172,9 @@
                     <button type="button" class="btn btn-outline-primary btn-sm" id="sshRefreshBtn" onclick="refreshSshServers()" title="Re-scan the SSH config and reload the list">
                         <i class="bi bi-arrow-clockwise"></i> Refresh
                     </button>
+                    <button type="button" class="btn btn-outline-success btn-sm" id="sshTestAllBtn" onclick="testAllConnections()" title="Test connectivity for every server currently shown (respects search &amp; filter)">
+                        <i class="bi bi-plug-fill"></i> Test all shown
+                    </button>
                     <button type="button" class="btn btn-outline-danger btn-sm" id="sshClearOpenCountsBtn" onclick="clearSshOpenCounts()" title="Reset every &quot;Opened&quot; counter — empties storage/app/ssh/open_counts.json">
                         <i class="bi bi-eraser"></i> Clear count
                     </button>
@@ -184,15 +187,27 @@
         </div>
 
         <div class="stats-grid-ssh">
-            <div class="stat-card-ssh">
+            <button type="button" class="stat-card-ssh stat-card-clickable active" id="statCardAll" onclick="applySshFilter('all')" title="Show every server">
                 <div id="totalServers" class="stat-number-ssh">0</div>
                 <div class="stat-label">Total Servers</div>
-            </div>
-            <div class="stat-card-ssh">
-                <div id="validKeys" class="stat-number-ssh">0</div>
-                <div class="stat-label">Valid Keys</div>
-            </div>
-            <div class="stat-card-ssh">
+            </button>
+            <button type="button" class="stat-card-ssh stat-card-clickable" id="statCardMissingKey" onclick="applySshFilter('missing-key')" title="Show servers whose identity file is missing on disk">
+                <div id="statMissingKeys" class="stat-number-ssh">0</div>
+                <div class="stat-label">Missing Keys</div>
+            </button>
+            <button type="button" class="stat-card-ssh stat-card-clickable" id="statCardFavorites" onclick="applySshFilter('favorites')" title="Show favorites only">
+                <div id="statFavorites" class="stat-number-ssh">0</div>
+                <div class="stat-label">Favorites</div>
+            </button>
+            <button type="button" class="stat-card-ssh stat-card-clickable" id="statCardNeverOpened" onclick="applySshFilter('never-opened')" title="Show servers you have never opened">
+                <div id="statNeverOpened" class="stat-number-ssh">0</div>
+                <div class="stat-label">Never Opened</div>
+            </button>
+            <button type="button" class="stat-card-ssh stat-card-clickable" id="statUntestedCard" onclick="testAllConnections()" title="Click to test all currently shown servers">
+                <div id="statUntested" class="stat-number-ssh">0</div>
+                <div class="stat-label">Untested</div>
+            </button>
+            <div class="stat-card-ssh" title="Total number of times servers were opened">
                 <div id="totalOpens" class="stat-number-ssh">0</div>
                 <div class="stat-label">Total Opens</div>
             </div>

@@ -97,6 +97,7 @@ Route::prefix('ssh')->group(function () {
     Route::post('/add', [SshController::class, 'addHost'])->name('ssh.add');
     Route::put('/update/{originalHost}', [SshController::class, 'updateHost'])->name('ssh.update');
     Route::post('/test', [SshController::class, 'testConnectionWithKey'])->name('ssh.test');
+    Route::post('/test-many', [SshController::class, 'testManyConnections'])->name('ssh.test.many');
     Route::post('/record', [SshController::class, 'recordConnection'])->name('ssh.record');
     Route::get('/get-server/{host}', [SshController::class, 'getServer'])->name('ssh.get-server');
     Route::get('/command/{host}', [SshController::class, 'getSshCommand'])->name('ssh.command');

@@ -25,3 +25,7 @@ Thumbs.db
 /storage/numlock_count.txt
 __pycache__/
 *.pyc
+.env
+.env.backup
+.env.production
+.env.example
